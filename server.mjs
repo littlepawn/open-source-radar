@@ -26,6 +26,13 @@ import {
   pickKeyFiles, buildMessages, validateAiConfig, resolveBaseUrl, normalizeModels,
   matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT,
 } from "./lib/ai.mjs";
+// 查询参数统一收敛：NaN / 越界都回落到默认，不让脏输入进 SQL 或纯函数
+function clampNum(v, fallback, lo, hi) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(hi, Math.max(lo, Math.trunc(n)));
+}
+
 import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
 import { DISCOVER_DEFAULTS, DISCOVER_NOTE, buildDiscoverQuery } from "./lib/discover.mjs";
 import {
@@ -347,6 +354,15 @@ async function aiRepoContext(row, { wantTree = true } = {}) {
   return ctx;
 }
 
+// URL 里可能带 key（https://x/v1?key=sk-...）或 userinfo，落日志前剥掉
+function safeUrlForLog(u) {
+  try { const x = new URL(String(u)); return x.origin + x.pathname; } catch { return "(invalid)"; }
+}
+// 上游错误体 / 配置值里可能出现的凭据，落库与下发前一律打码
+function redactSecrets(s) {
+  return String(s ?? "").replace(/(sk-|Bearer\s+|gh[pousr]_|github_pat_|api[_-]?key["'=:\s]*)[A-Za-z0-9_\-]{8,}/gi, "$1***");
+}
+
 // OpenAI 兼容的 chat/completions，一套配置覆盖 DeepSeek / 通义 / Kimi / Ollama / oneAPI
 async function aiChat(messages, cfg) {
   const key = aiKey();
@@ -370,8 +386,10 @@ async function aiChat(messages, cfg) {
   const text = await res.text();
   if (!res.ok) {
     // 中转站常把真实原因塞在 body 里，别只报状态码
-    let msg = text.slice(0, 400);
-    try { const j = JSON.parse(text); msg = j.error?.message || j.message || msg; } catch {}
+    // 错误体是上游给的，可能回显我们发出的 Authorization（中转站常见 sk-...abcd）。
+    // 这条消息会 log 进 events 表并随 recent_events 下发前端，必须先脱敏再往下传。
+    let msg = redactSecrets(text.slice(0, 400));
+    try { const j = JSON.parse(text); msg = redactSecrets(String(j.error?.message || j.message || msg)); } catch {}
     throw new Error(`AI 接口 ${res.status}：${msg}`);
   }
   let data;
@@ -409,7 +427,10 @@ function sessionInfo(req) {
   if (!sid) return null;
   const row = db.query("SELECT * FROM sessions WHERE sid=?").get(sid);
   if (!row) return null;
-  if (Number(row.exp) < Date.now()) {
+  // 必须防 NaN：exp 缺失时 Number(null)=0 尚可，但脏数据会算出 NaN，
+  // 而 NaN < Date.now() 恒为 false —— 过期会话反而永远有效。
+  const exp = Number(row.exp);
+  if (!Number.isFinite(exp) || exp < Date.now()) {
     db.query("DELETE FROM sessions WHERE sid=?").run(sid);
     return null;
   }
@@ -1497,8 +1518,10 @@ const server = Bun.serve({
           WHERE COALESCE(r.detached,0)=0 AND r.source != 'discover'
             AND r.id NOT IN (SELECT repo_id FROM hidden)`).all();
         const cand = cleanupCandidates(rows, Date.now(), {
-          idleDays: Number(u.searchParams.get("idleDays") || 365),
-          neverOpenedDays: Number(u.searchParams.get("neverOpenedDays") || 180),
+          // 直接 Number("abc") 是 NaN，会让判定全为 false 或全为 true，
+          // 页面呈现出「一条不剩 / 全都建议删」两种假象。非法值一律回落默认。
+          idleDays: clampNum(u.searchParams.get("idleDays"), 365, 1, 3650),
+          neverOpenedDays: clampNum(u.searchParams.get("neverOpenedDays"), 180, 1, 3650),
         });
         // 补上给人看的字段，前端不再二次计算
         const byId = new Map(rows.map((r) => [r.id, r]));
@@ -1552,7 +1575,9 @@ const server = Bun.serve({
           for (const [k, v] of Object.entries(cfg)) setMeta(`ai_${k}`, v);
           // key 单独走：不传就不动，传空串才清除。这样前端只改 base_url 时不会把 key 抹掉。
           if (b.api_key !== undefined) setAiKey(b.api_key);
-          log("info", `AI 配置已更新（${cfg.base_url} / ${cfg.model}）`);
+          // base_url 原样落日志会泄密：中转站常见写法是 https://x/v1?key=sk-...。
+          // 只留 origin+pathname，query 与 userinfo 一律剥掉。
+          log("info", `AI 配置已更新（${safeUrlForLog(cfg.base_url)} / ${cfg.model}）`);
           return json({ ok: true, ...getAiConfig() });
         }
       }
@@ -1685,17 +1710,28 @@ const server = Bun.serve({
       if (mTag) {
         const id = Number(mTag[1]);
         if (req.method === "DELETE") {
+          // 删父标签必须先把子标签的 parent 摘掉，否则子标签指向不存在的父级，
+          // 侧栏分组里它们会整组消失（分组按 parent 名匹配）。
+          const gone = db.query("SELECT name FROM tags WHERE id=?").get(id);
           db.query("DELETE FROM repo_tags WHERE tag_id=?").run(id);
           db.query("DELETE FROM tags WHERE id=?").run(id);
+          if (gone?.name) db.query("UPDATE tags SET parent=NULL WHERE parent=?").run(gone.name);
           return json({ ok: true });
         }
         if (req.method === "PATCH") {
           const b = await req.json();
-          if (b.name) db.query("UPDATE tags SET name=? WHERE id=?").run(String(b.name).trim(), id);
+          const cur = db.query("SELECT name FROM tags WHERE id=?").get(id);
+          // 改名必须级联子标签：parent 存的是名字，不一起改的话子标签会瞬间变成孤儿。
+          if (b.name) {
+            const nn = String(b.name).trim();
+            if (nn && nn !== cur?.name) {
+              db.query("UPDATE tags SET name=? WHERE id=?").run(nn, id);
+              db.query("UPDATE tags SET parent=? WHERE parent=?").run(nn, cur?.name ?? "\u0000");
+            }
+          }
           if (b.color !== undefined) db.query("UPDATE tags SET color=? WHERE id=?").run(b.color, id);
           if (b.parent !== undefined) {
             // 允许置空（移回顶层）；不允许自己当自己的父标签
-            const cur = db.query("SELECT name FROM tags WHERE id=?").get(id);
             const parent = String(b.parent || "").trim() || null;
             db.query("UPDATE tags SET parent=? WHERE id=?")
               .run(parent && parent !== cur?.name ? parent : null, id);
@@ -1809,10 +1845,11 @@ const server = Bun.serve({
           sort: qp.sort || "stars",
           q: qp.q || "",
           // stars 不传时交给 discover 按榜单取默认，所以这里不要填 0
-          stars: qp.stars === undefined || qp.stars === "" ? undefined : Number(qp.stars),
-          days: qp.days === undefined || qp.days === "" ? undefined : Number(qp.days),
-          page: Number(qp.page || 1),
-          per_page: Math.min(50, Number(qp.per_page || 30)),
+          stars: qp.stars === undefined || qp.stars === "" ? undefined : clampNum(qp.stars, 2000, 0, 5_000_000),
+          days: qp.days === undefined || qp.days === "" ? undefined : clampNum(qp.days, 365, 1, 3650),
+          // ?per_page=abc → Math.min(50, NaN) = NaN，会被原样拼进 GitHub 请求。
+          page: clampNum(qp.page, 1, 1, 100),
+          per_page: clampNum(qp.per_page, 30, 1, 50),
         });
         return json(out);
       }
@@ -1842,6 +1879,10 @@ const server = Bun.serve({
           repos: db.query("SELECT * FROM repos").all().map((r) => ({ ...r, readme: undefined })),
           repo_tags: db.query("SELECT * FROM repo_tags").all(),
           hidden: db.query("SELECT * FROM hidden").all(),
+          // AI 配置、自动同步设置、同步游标全在 meta 里。早先没导出它，
+          // 「导出备份」恢复后 AI 要重配、自动同步要重开，等于备份少了一半。
+          meta: db.query("SELECT k, v FROM meta WHERE k NOT LIKE 'ai_api_key%'").all()
+            .reduce((o, r) => { o[r.k] = r.v; return o; }, {}),
         };
         return new Response(JSON.stringify(data, null, 1), {
           headers: {

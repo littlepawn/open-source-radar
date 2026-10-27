@@ -112,3 +112,31 @@ describe("ruleDigest", () => {
     expect(ruleDigest(row).digest).toBe(ruleDigest(row).digest);
   });
 });
+
+describe("规则误判回归（OCR 审查发现）", () => {
+  const tagsOf = (name, description) => ruleDigest({ name, description, topics: [] }).tags;
+  test("sing-box 不是音频项目", () => {
+    // \bsing\b 会命中 sing-box（- 是词边界），早先它同时挂「音频语音+网络代理+中转转发」
+    expect(tagsOf("sing-box", "The universal proxy platform")).toContain("网络代理");
+    expect(tagsOf("sing-box", "The universal proxy platform")).not.toContain("音频语音");
+  });
+  test("纯 PDF 工具不重复挂 OCR", () => {
+    expect(tagsOf("pdf-toolkit", "PDF toolkit: merge split convert")).toEqual(["文档办公"]);
+  });
+  test("retrofit 不是游戏", () => {
+    expect(tagsOf("retrofit", "A type-safe HTTP client for Android")).not.toContain("游戏");
+  });
+  test("reverse engineering 不是代理", () => {
+    expect(tagsOf("re-toolkit", "reverse engineering toolkit")).not.toContain("网络代理");
+  });
+  test("slider 组件不是 PPT 工具", () => {
+    expect(tagsOf("range-slider", "A range slider component for React")).not.toContain("文档办公");
+  });
+  test("admin dashboard 不是自托管", () => {
+    expect(tagsOf("pg-dash", "an admin dashboard for postgres")).not.toContain("自托管");
+  });
+  test("正常游戏 / 代理仍命中", () => {
+    expect(tagsOf("mygame", "a retro platformer game")).toContain("游戏");
+    expect(tagsOf("v2ray", "v2ray proxy client")).toContain("网络代理");
+  });
+});

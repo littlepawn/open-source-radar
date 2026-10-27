@@ -142,8 +142,13 @@ function renderSide() {
     // 置灰 + 禁用，让数字先说话。真点开了也能看到下面的空态文案。
     const btn = $(num);
     if (btn) {
+      // 零条置灰，但不能禁用「当前正在生效」的那个：在待读队列里把最后一条移出后，
+      // counts.toread 变 0、按钮被禁用，而 state.filter 还是 toread —— 用户就被
+      // 锁死在这个空视图里，连取消筛选的按钮都点不动了。
+      // 计数为 0 时禁用，会把「进入这个视图的唯一入口」也堵死：用户第一次想看
+      // 待读队列（此时必然是 0 条）就点不动，而点进去本来是为了看到空态文案。
+      // 只置灰表示「这里是空的」，不禁用——按钮仍是入口，点开有解释。
       btn.classList.toggle("is-empty", n === 0);
-      btn.disabled = n === 0;
       if (n === 0) btn.setAttribute("title", "这里还没有条目");
       else btn.removeAttribute("title");
     }
@@ -436,6 +441,10 @@ async function openRepo(id) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ id: r.id, question: q, history: aiState.history.slice(0, -1) }),
       });
+      // 期间用户可能已经切到别的仓库：aiState 是单例，切走时 history 已被清空，
+      // 这时把 A 的答案 push 进去会污染 B 的上下文（B 下次提问会带上 A 的问答），
+      // 而且下面 $("#aiChatHint") / $("#aiAsk") 查到的是 B 面板的节点。直接作废。
+      if (aiState.repoId !== r.id) return;
       aiState.history.push({ role: "assistant", content: d.answer });
       box.querySelector(".pending")?.remove();
       box.insertAdjacentHTML("beforeend", `<div class="msg assistant">${RadarMD.markdown(d.answer)}</div>`);
@@ -446,13 +455,20 @@ async function openRepo(id) {
       box.insertAdjacentHTML("beforeend", `<div class="msg err">失败：${esc(e.message)}</div>`);
       $("#aiChatHint").textContent = "";
     } finally {
-      $("#aiAsk").disabled = false;
+      // 已切仓库时不要碰当前面板的按钮：那可能是 B 正在等待中的「发送」
+      if (aiState.repoId === r.id) $("#aiAsk").disabled = false;
     }
   };
   const askBtn = $("#aiAsk");
   if (askBtn) askBtn.onclick = ask;
   const aiQ = $("#aiQ");
-  if (aiQ) aiQ.onkeydown = (e) => { if (e.key === "Enter") ask(); };
+  // 回车必须看按钮状态：请求在飞时 #aiAsk 是 disabled 的，但输入框照样能敲回车，
+  // 不看 disabled 就会并发发第二次 /api/ai/chat，history 里留下两条连续 user 消息。
+  if (aiQ) aiQ.onkeydown = (e) => {
+    if (e.key !== "Enter" || e.shiftKey) return;
+    e.preventDefault();
+    if (askBtn && !askBtn.disabled) ask();
+  };
 
   // README
   try {
@@ -841,7 +857,13 @@ document.addEventListener("click", async (e) => {
     const c = quick.closest(".card");
     const id = Number(c?.dataset.id);
     const row = state.items.find((x) => x.id === id);
-    if (!row) return;
+    if (!row) {
+      // 发现页的卡片渲染进 #dResult，根本不在 state.items 里。早先这里直接 return，
+      // 用户点了「待读 / 隐藏」毫无反应——静默失败比报错更让人以为坏了。
+      // 这些标记要落在本地库里，而发现页的仓库可能还没收编，先给一句人话。
+      toast("这个仓库还没收编到本地，先在「详情」里打开一次");
+      return;
+    }
     const act = quick.dataset.act;
     const undoHint = {
       qdrop: "放弃只是不再提醒，不会取消 star；可在「已放弃」里一键恢复。",
