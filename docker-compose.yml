@@ -1,0 +1,29 @@
+services:
+  radar:
+    image: ${RADAR_IMAGE:-littlepawn/open-source-radar:latest}
+    build: .
+    container_name: open-source-radar
+    restart: unless-stopped
+    ports:
+      # 默认只绑回环：这个面板存着 GitHub token 且可登录，
+      # 直接映射到 0.0.0.0 会让整个局域网都能访问。
+      # 需要局域网访问时显式设置 RADAR_BIND=0.0.0.0
+      - "${RADAR_BIND:-127.0.0.1}:${RADAR_PORT:-8788}:8788"
+    volumes:
+      - radar-data:/data
+    environment:
+      # 可选：设了环境变量 token 就免登录（单用户自托管最省事）
+      # GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      # 会话与加密密钥；不设会自动生成并持久化在 /data/radar.db 里
+      SESSION_SECRET: ${SESSION_SECRET:-}
+      TZ: Asia/Shanghai
+    healthcheck:
+      # 用 wget 退出码判断，不匹配响应正文里的 "200"（Content-Length 也会命中）
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8788/login' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  radar-data:
