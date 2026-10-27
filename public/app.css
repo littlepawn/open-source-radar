@@ -158,6 +158,12 @@ button { cursor: pointer; }
 }
 .ghost:hover { border-color: var(--accent-2); color: var(--text); }
 .minihint { font-size: 11.5px; color: var(--text-faint); text-align: center; }
+/* 服务商提示条：告诉用户「这家 /models 拉不到不是你的错」或「这端点用不了」 */
+.warnnote {
+  text-align: left; margin: 4px 0 2px; padding: 8px 10px;
+  border: 1px solid var(--warn); border-radius: 8px;
+  color: var(--warn); background: color-mix(in srgb, var(--warn) 8%, transparent);
+}
 
 /* ---------------- 主区 */
 .main { padding: 16px 22px 40px; min-width: 0; }

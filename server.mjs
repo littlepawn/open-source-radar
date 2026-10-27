@@ -22,7 +22,10 @@ import { join, dirname, extname, normalize as pnorm } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { ruleDigest } from "./lib/rules.mjs";
-import { pickKeyFiles, buildMessages, validateAiConfig, AI_PRESETS, DEFAULT_EXTRA_PROMPT } from "./lib/ai.mjs";
+import {
+  pickKeyFiles, buildMessages, validateAiConfig, resolveBaseUrl, normalizeModels,
+  matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT,
+} from "./lib/ai.mjs";
 import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
 import { DISCOVER_DEFAULTS, DISCOVER_NOTE, buildDiscoverQuery } from "./lib/discover.mjs";
 
@@ -340,7 +343,7 @@ async function aiRepoContext(row, { wantTree = true } = {}) {
 async function aiChat(messages, cfg) {
   const key = aiKey();
   if (!key) throw new Error("未配置 AI API Key（在「AI 设置」里填）");
-  const url = String(cfg.base_url).replace(/\/+$/, "") + "/chat/completions";
+  const url = `${resolveBaseUrl(cfg.base_url)}/chat/completions`;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -1323,7 +1326,16 @@ const server = Bun.serve({
         // default_extra_prompt 一起下发：「恢复默认」按钮要用它填回文本框，
         // 这段长文案只该有一份定义（lib/ai.mjs），不能前后端各写一遍。
         if (req.method === "GET") {
-          return json({ ...getAiConfig(), presets: AI_PRESETS, default_extra_prompt: DEFAULT_EXTRA_PROMPT });
+          const cfg = getAiConfig();
+          const prov = matchProvider(cfg.base_url);
+          return json({
+            ...cfg,
+            presets: AI_PRESETS,
+            provider: prov.id,
+            provider_kind: prov.kind,
+            provider_label: prov.label,
+            default_extra_prompt: DEFAULT_EXTRA_PROMPT,
+          });
         }
         if (req.method === "POST") {
           const b = await req.json().catch(() => ({}));
@@ -1346,17 +1358,20 @@ const server = Bun.serve({
           return json({ ok: true, ...getAiConfig() });
         }
       }
-      /* 拉上游模型列表：GET /models 是 OpenAI 兼容接口的标配，DeepSeek、Moonshot、
-         智谱、通义、Ollama、绝大多数中转站都支持。返回的 id 直接喂给模型下拉。
-         拿不到就如实报错，前端保持手填——不能让「拉不到」变成「配不了」。 */
+      /* 拉上游模型列表。对齐 Open WebUI 的「协议优先」实践（docs.openwebui.com
+         getting-started/connect-a-provider）：/models 能列出就拉，列不到就提示
+         手填，不让「验证失败」变成「配不了」。 */
       if (p === "/api/ai/models" && req.method === "POST") {
         const b = await req.json().catch(() => ({}));
         const cfg = getAiConfig();
         // 允许用表单里还没保存的 base_url/key 直接试，省得先存一次
-        const baseUrl = String(b.base_url || cfg.base_url || "").trim().replace(/\/+$/, "");
+        const baseUrlRaw = String(b.base_url || cfg.base_url || "").trim();
         const key = String(b.api_key || "").trim() || aiKey();
-        if (!baseUrl) return json({ error: "先填 Base URL" }, 400);
+        if (!baseUrlRaw) return json({ error: "先填 Base URL" }, 400);
         if (!key) return json({ error: "先填 API Key" }, 400);
+        // 有的服务商 /models 走非标准路径（如 Anthropic 的 native 端点没有 /v1/models），
+        // 用归一化后的地址尝试，拿不到再按「验证失败但 chat 仍可用」如实回
+        const baseUrl = resolveBaseUrl(baseUrlRaw);
         try {
           const res = await fetch(`${baseUrl}/models`, {
             headers: { authorization: `Bearer ${key}` },
@@ -1366,15 +1381,11 @@ const server = Bun.serve({
           if (!res.ok) {
             let msg = text.slice(0, 300);
             try { const j = JSON.parse(text); msg = j.error?.message || j.message || msg; } catch {}
-            return json({ error: `上游 ${res.status}：${msg}` }, 502);
+            // Open WebUI 的结论：/models 验证失败不代表 chat 不通，如实告知并建议手填
+            return json({ error: `上游 ${res.status}：${msg}`, models_ok: false }, 502);
           }
           const data = JSON.parse(text);
-          // 标准是 {data:[{id}]}；个别中转直接回数组，Ollama 回 {models:[{name}]}
-          const raw = Array.isArray(data) ? data : data.data || data.models || [];
-          const ids = raw
-            .map((m) => m?.id || m?.name || m?.model)
-            .filter((x) => typeof x === "string" && x)
-            .sort();
+          const ids = normalizeModels(data);
           if (!ids.length) return json({ error: "上游没返回任何模型", raw: text.slice(0, 300) }, 502);
           return json({ ok: true, models: ids });
         } catch (e) {

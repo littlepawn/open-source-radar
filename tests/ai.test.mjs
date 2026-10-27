@@ -2,7 +2,10 @@
    AI 这块最容易出的不是「崩」，而是「悄悄把上下文撑爆」或「配置半对半错却不报」，
    所以断言集中在边界与预算守恒上。 */
 import { describe, expect, test } from "bun:test";
-import { estimateTokens, clip, pickKeyFiles, topDirs, buildMessages, AI_PRESETS, validateAiConfig } from "../lib/ai.mjs";
+import {
+  estimateTokens, clip, pickKeyFiles, topDirs, buildMessages, AI_PRESETS, validateAiConfig,
+  matchProvider, normalizeModels, resolveBaseUrl, presetById,
+} from "../lib/ai.mjs";
 
 describe("estimateTokens", () => {
   test("中文比英文更贵（同样字符数 token 更多）", () => {
@@ -182,5 +185,84 @@ describe("validateAiConfig", () => {
     expect(errs.join(" ")).toContain("base_url");
     expect(errs.join(" ")).toContain("model");
     expect(errs.join(" ")).toContain("max_tokens");
+  });
+});
+
+/* ---- Provider 识别 / 模型归一化 / Base URL 归一化 ----
+   依据：Open WebUI 的 OpenAI-Compatible 文档（docs.openwebui.com）——
+   Perplexity / GitHub Models / MiniMax 不提供标准 /models；
+   Anthropic 原生端点不是 OpenAI 协议。 */
+describe("matchProvider", () => {
+  test("Anthropic 原生端点识别为 anthropic（chat 用不了，前端要提示）", () => {
+    expect(matchProvider("https://api.anthropic.com/v1/messages").kind).toBe("anthropic");
+  });
+  test("Perplexity / MiniMax / GitHub Models 识别为 hosted（/models 拉不到）", () => {
+    expect(matchProvider("https://api.perplexity.ai").kind).toBe("hosted");
+    expect(matchProvider("https://api.minimax.chat/v1").kind).toBe("hosted");
+    expect(matchProvider("https://models.github.ai/orgs/foo/catalog").kind).toBe("hosted");
+  });
+  test("标准 OpenAI 兼容端点一律 openai（含中转与本地）", () => {
+    for (const u of [
+      "https://api.deepseek.com/v1",
+      "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "http://127.0.0.1:11434/v1",
+      "https://my-relay.example.com/api/v1",
+    ]) {
+      expect(matchProvider(u).kind).toBe("openai");
+    }
+  });
+  test("非法/空 URL 不抛错，回落 openai-compatible", () => {
+    expect(() => matchProvider("")).not.toThrow();
+    expect(() => matchProvider("not a url")).not.toThrow();
+    expect(matchProvider("not a url").kind).toBe("openai");
+  });
+});
+
+describe("normalizeModels", () => {
+  test("标准 OpenAI 形态 {data:[{id}]}", () => {
+    expect(normalizeModels({ data: [{ id: "b" }, { id: "a" }] })).toEqual(["a", "b"]);
+  });
+  test("裸数组形态", () => {
+    expect(normalizeModels([{ id: "m1" }])).toEqual(["m1"]);
+  });
+  test("Ollama 形态 {models:[{name}]}", () => {
+    expect(normalizeModels({ models: [{ name: "qwen2.5:7b" }] })).toEqual(["qwen2.5:7b"]);
+  });
+  test("model 字段兜底 + 去重 + 空串过滤", () => {
+    expect(normalizeModels([{ id: "x" }, { id: "x" }, { name: "" }, { model: "y" }])).toEqual(["x", "y"]);
+  });
+  test("空输入返回空数组（调用方负责报「没返回任何模型」）", () => {
+    expect(normalizeModels({})).toEqual([]);
+    expect(normalizeModels({ data: [] })).toEqual([]);
+  });
+});
+
+describe("resolveBaseUrl", () => {
+  test("官方域名缺 /v1 时自动补", () => {
+    expect(resolveBaseUrl("https://api.deepseek.com")).toBe("https://api.deepseek.com/v1");
+    expect(resolveBaseUrl("https://api.openai.com/")).toBe("https://api.openai.com/v1");
+    expect(resolveBaseUrl("https://api.moonshot.cn")).toBe("https://api.moonshot.cn/v1");
+  });
+  test("已带 /v1 或其他路径不动", () => {
+    expect(resolveBaseUrl("https://api.deepseek.com/v1")).toBe("https://api.deepseek.com/v1");
+    expect(resolveBaseUrl("https://my-relay.example.com/api")).toBe("https://my-relay.example.com/api");
+  });
+  test("尾斜杠清掉", () => {
+    expect(resolveBaseUrl("https://x.example.com/v1///")).toBe("https://x.example.com/v1");
+  });
+  test("非 URL 原样返回不抛错", () => {
+    expect(resolveBaseUrl("")).toBe("");
+    expect(resolveBaseUrl("nonsense")).toBe("nonsense");
+  });
+});
+
+describe("presetById", () => {
+  test("按 base_url 反查预设（容尾斜杠）", () => {
+    expect(presetById("https://api.deepseek.com/v1")?.id).toBe("deepseek");
+    expect(presetById("https://api.deepseek.com/v1/")?.id).toBe("deepseek");
+  });
+  test("未知地址返回 null（前端显示「自定义」）", () => {
+    expect(presetById("https://unknown.example.com/v1")).toBe(null);
+    expect(presetById("")).toBe(null);
   });
 });
