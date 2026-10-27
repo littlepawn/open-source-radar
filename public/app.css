@@ -141,6 +141,10 @@ button { cursor: pointer; }
 .chip.active b { color: var(--accent-fg); opacity: .7; }
 /* 用户在标签上设了颜色时用它描边；CSP 禁止内联 style，改用属性选择器消费 */
 .chip[data-color] { border-color: attr(data-color type(<color>), var(--line)); }
+/* 快捷选择行（自动同步间隔等）：chip 需要可点，补 hover 光标与选中态 */
+.quickrow { display: flex; flex-wrap: wrap; gap: 6px; }
+.quickrow .chip { cursor: pointer; }
+.quickrow .chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
 .sidefoot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 10px; }
 .sidebody + .sidefoot { margin-top: 0; }
@@ -482,6 +486,12 @@ button.link {
   margin: 0 0 6px; padding-bottom: 7px; border-bottom: 1px solid var(--line);
 }
 .set-sec > .minihint { margin-bottom: 10px; }
+/* 设置页里所有说明文字左对齐：全局 .minihint 是 text-align:center（侧栏用），
+   设置页是多行说明段落，居中会出现「每行都偏向中线、两侧留白不齐」的观感。
+   #aiHint 是按钮行里的短提示，跟着按钮基线走，不受影响（它在 .btnrow 内）。 */
+#viewSettings .minihint { text-align: left; line-height: 1.7; }
+/* .btnrow 原本只在抽屉里定义，设置页复用了它做按钮行，所以这里补基础样式 */
+#viewSettings .btnrow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
 /* sidefoot 里「导出备份 / 设置」并排一行，主按钮独占一行 */
 .footrow { display: flex; gap: 8px; }
 .footrow > button { flex: 1; }

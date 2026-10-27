@@ -198,6 +198,30 @@
 
         <!-- 后续设置项往这里加：每项一个 <section class="set-sec">，
              侧栏顶部会根据这些 section 的 data-nav 自动生成跳转条。 -->
+
+        <section class="set-sec" id="set-sync" data-nav="自动同步">
+          <h3 class="set-h3">自动同步</h3>
+          <div class="minihint">本地服务常驻时，按固定间隔自动拉一次 star / fork。默认两小时，改成你想要的分钟数即可。间隔过短会打光 GitHub 的 API 配额（未认证 60 次/小时，一次全量同步要翻几十页），所以下限 15 分钟。</div>
+          <div class="aiform">
+            <label class="frow"><span>启用自动同步</span><input id="asEnabled" type="checkbox" /></label>
+            <label class="frow"><span>间隔（分钟）</span><input id="asInterval" type="number" min="15" max="1440" step="1" placeholder="120" /></label>
+            <div class="frow"><span>快捷</span>
+              <div class="quickrow" id="asQuick">
+                <button class="chip" data-min="60" type="button">1 小时</button>
+                <button class="chip" data-min="120" type="button">2 小时</button>
+                <button class="chip" data-min="360" type="button">6 小时</button>
+                <button class="chip" data-min="720" type="button">12 小时</button>
+                <button class="chip" data-min="1440" type="button">每天</button>
+              </div>
+            </div>
+          </div>
+          <div class="btnrow">
+            <button id="asSave" class="primary">保存</button>
+            <span class="minihint" id="asHint"></span>
+          </div>
+          <div class="minihint" id="asNext"></div>
+          <div class="minihint warnnote" id="asError" hidden></div>
+        </section>
       </div>
     </div>
   </main>

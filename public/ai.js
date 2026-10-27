@@ -173,7 +173,107 @@
       $("#aiExtra").value = defaultPrompt;
       $("#aiHint").textContent = "已填回默认分析提示词，记得保存";
     };
+    bindAutoSync();
   });
+
+  /* ---------------- 自动同步设置 ---------------- */
+  let asCfg = { min_interval: 15, max_interval: 1440, default_interval: 120 };
+
+  function markQuick(min) {
+    for (const c of document.querySelectorAll("#asQuick .chip")) {
+      c.classList.toggle("active", Number(c.dataset.min) === Number(min));
+    }
+  }
+
+  // 把后端的原始错误压成一句人话：GitHub 的响应体是 JSON，
+  // 直接塞进提示条会是一坨带转义的 `{ "message": ... }`，读不出重点。
+  function shortError(raw) {
+    const s = String(raw || "").trim();
+    if (!s) return "";
+    const m = s.match(/"message"\s*:\s*"([^"]+)"/);
+    if (m) {
+      const code = (s.match(/GitHub (\d{3})/) || [])[1];
+      return code ? `${code} ${m[1]}` : m[1];
+    }
+    return s.split("\n")[0].slice(0, 160);
+  }
+
+  function renderNext(d) {
+    const el = $("#asNext");
+    const errEl = $("#asError");
+    if (!el) return;
+    // 上次同步失败要说出来：否则用户只看到数字不刷新，不知道是间隔没到还是同步一直失败
+    if (errEl) {
+      const e = shortError(d.last_error);
+      errEl.hidden = !e;
+      errEl.textContent = e ? `上次自动同步失败：${e}` : "";
+    }
+    if (!d.enabled) { el.textContent = "自动同步已关闭，只能手动点「同步 GitHub」。"; return; }
+    if (!d.next_run_at) { el.textContent = ""; return; }
+    const mins = Math.max(0, Math.round((d.next_run_at - Date.now()) / 60000));
+    const when = mins <= 0 ? "即将开始" : mins < 60 ? `${mins} 分钟后` : `${(mins / 60).toFixed(1)} 小时后`;
+    el.textContent = `下次自动同步：${when}（每 ${humanInterval(d.interval)}）`;
+  }
+
+  // 与 lib/schedule.mjs 的 humanInterval 一致：设置页要显示「2 小时」而不是「120 分钟」
+  function humanInterval(min) {
+    const n = Math.max(1, Math.round(Number(min) || 0));
+    if (n < 60) return `${n} 分钟`;
+    const h = n / 60;
+    return Number.isInteger(h) ? `${h} 小时` : `${Math.floor(h)} 小时 ${n % 60} 分钟`;
+  }
+
+  async function loadAutoSync() {
+    if (!$("#asEnabled")) return;
+    try {
+      const d = await api("/api/settings/autosync");
+      asCfg = { ...asCfg, ...d };
+      $("#asEnabled").checked = !!d.enabled;
+      $("#asInterval").value = d.interval;
+      $("#asInterval").min = d.min_interval;
+      $("#asInterval").max = d.max_interval;
+      markQuick(d.interval);
+      renderNext(d);
+      $("#asHint").textContent = "";
+    } catch (e) {
+      $("#asHint").textContent = "读取失败：" + e.message;
+    }
+  }
+
+  async function saveAutoSync() {
+    const raw = Number($("#asInterval").value);
+    if (!Number.isFinite(raw) || raw <= 0) { $("#asHint").textContent = "请填一个正的分钟数"; return; }
+    try {
+      const d = await api("/api/settings/autosync", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ enabled: $("#asEnabled").checked, interval: raw }),
+      });
+      // 后端会把越界值收敛后回填，所以要按返回值重绘，别按用户输入显示
+      $("#asInterval").value = d.interval;
+      markQuick(d.interval);
+      renderNext(d);
+      $("#asHint").textContent = d.interval !== Math.round(raw)
+        ? `已保存（${raw} 分钟超出范围，按${humanInterval(d.interval)}执行）`
+        : "已保存";
+    } catch (e) {
+      $("#asHint").textContent = "保存失败：" + e.message;
+    }
+  }
+
+  function bindAutoSync() {
+    if (!$("#asEnabled")) return;
+    $("#asSave").onclick = saveAutoSync;
+    $("#asEnabled").onchange = saveAutoSync;
+    for (const c of document.querySelectorAll("#asQuick .chip")) {
+      c.onclick = () => {
+        $("#asInterval").value = c.dataset.min;
+        markQuick(c.dataset.min);
+        saveAutoSync();
+      };
+    }
+    loadAutoSync();
+  }
   // 打开「AI 设置」视图时要重新读一次（可能被别人改过）
-  window.RadarAI = { reload: load };
+  window.RadarAI = { reload: load, reloadSync: loadAutoSync };
 })();

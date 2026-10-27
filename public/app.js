@@ -757,6 +757,7 @@ document.addEventListener("click", async (e) => {
     if (state.view === "cleanup") await loadCleanup(false);
     if (state.view === "settings") {
       if (window.RadarAI) await RadarAI.reload();
+      if (window.RadarAI?.reloadSync) await RadarAI.reloadSync();
       buildSetNav();
       // 带 data-anchor 的入口（比如抽屉里「去填 Base URL」）要滚到对应小节，
       // 否则用户点了跳到设置页顶部，还得自己往下找。

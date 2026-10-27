@@ -28,6 +28,11 @@ import {
 } from "./lib/ai.mjs";
 import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
 import { DISCOVER_DEFAULTS, DISCOVER_NOTE, buildDiscoverQuery } from "./lib/discover.mjs";
+import {
+  clampInterval, msUntilNext, humanInterval,
+  DEFAULT_INTERVAL_MIN, MIN_INTERVAL_MIN, MAX_INTERVAL_MIN,
+  autoSyncRuntime as libAutoSyncRuntime,
+} from "./lib/schedule.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8788);
@@ -645,6 +650,51 @@ function applyAutoTags(row) {
 
 /* ---------------------------------------------------------------- 同步：stars + forks */
 let syncState = { running: false, kind: null, total: 0, done: 0, started_at: null, error: null, phase: "" };
+
+/* 自动同步调度。用 setTimeout 链而不是 setInterval：
+   间隔可随时改，setInterval 改了得重开，且同步耗时长于间隔时会堆叠。
+   每次跑完按「上次成功时间 + 间隔」重算下一次，错过就立刻补——见 lib/schedule.mjs。 */
+let autoSyncTimer = null;
+function autoSyncConfig() {
+  return {
+    enabled: getMeta("auto_sync_enabled") !== "false",       // 默认开
+    interval: clampInterval(getMeta("auto_sync_interval") || DEFAULT_INTERVAL_MIN),
+  };
+}
+/* 自动同步的「运行时」信息：算法在 lib/schedule.mjs 里（有单测），
+   这里只负责把 meta 表的值喂进去。 */
+function autoSyncRuntime(interval) {
+  return {
+    default_interval: DEFAULT_INTERVAL_MIN,
+    min_interval: MIN_INTERVAL_MIN,
+    max_interval: MAX_INTERVAL_MIN,
+    ...libAutoSyncRuntime({
+      ok: getMeta("last_sync_ok"),
+      attempt: getMeta("last_sync_attempt"),
+      error: getMeta("last_sync_error"),
+      interval,
+    }),
+  };
+}
+function scheduleAutoSync() {
+  if (autoSyncTimer) { clearTimeout(autoSyncTimer); autoSyncTimer = null; }
+  const { enabled, interval } = autoSyncConfig();
+  if (!enabled) return;
+  // 定基准时间：成功过就用成功时间；一次没成功过（或上次是失败）就看上次尝试时间。
+  // 都把失败算进基准，才不会出现「失败 → last_sync_ok 还是空 → 立刻重试」的忙循环。
+  const { next_run_at } = autoSyncRuntime(interval);
+  const wait = (next_run_at ?? Date.now()) - Date.now();
+  // 至少 5s，避免「立刻要跑」时把定时器打成忙循环
+  autoSyncTimer = setTimeout(async () => {
+    autoSyncTimer = null;
+    if (syncState.running) { scheduleAutoSync(); return; }   // 手动同步正跑着，等下一轮
+    log("info", `自动同步触发（间隔 ${humanInterval(interval)}）`);
+    await runSync("all");
+    scheduleAutoSync();
+  }, Math.max(5000, wait));
+  if (autoSyncTimer.unref) autoSyncTimer.unref();            // 别拦住进程退出
+}
+
 const listeners = new Set();
 function broadcast(obj) {
   db.query("DELETE FROM events WHERE id <= (SELECT MAX(id)-2000 FROM events)").run();
@@ -768,13 +818,19 @@ async function runSync(kind = "all") {
       setMeta("login", r.login);
     }
     setMeta("last_sync_ok", now());
+    setMeta("last_sync_error", "");
     log("info", `同步完成：star ${stars}，fork ${forks}，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   } catch (e) {
     syncState.error = e.message;
+    // 失败也要盖时间戳：否则 last_sync_ok 一直停在很久以前，
+    // msUntilNext 每次都返回 0，定时器退化成「每 5 秒重试一次」死循环打 GitHub。
+    setMeta("last_sync_attempt", now());
+    setMeta("last_sync_error", e.message.slice(0, 300));
     log("error", `同步失败：${e.message}`);
   } finally {
     syncState = { ...syncState, running: false, phase: "结束" };
     broadcast({ type: "done", ...syncState });
+    scheduleAutoSync();
   }
   return syncState;
 }
@@ -1561,6 +1617,32 @@ const server = Bun.serve({
         return json({ ok: true, started: true });
       }
 
+      /* ---- 自动同步设置 ---- */
+      if (p === "/api/settings/autosync") {
+        if (req.method === "GET") {
+          const { enabled, interval } = autoSyncConfig();
+          return json({ enabled, interval, ...autoSyncRuntime(interval) });
+        }
+        if (req.method === "POST") {
+          const b = await req.json().catch(() => ({}));
+          if (b.enabled !== undefined) setMeta("auto_sync_enabled", b.enabled ? "true" : "false");
+          if (b.interval !== undefined) {
+            const raw = Number(b.interval);
+            if (!Number.isFinite(raw) || raw <= 0) return json({ error: "间隔必须是正数（分钟）" }, 400);
+            // 越界不报错而是收敛，并如实回填——用户填 5 分钟要看到「已按 15 分钟执行」
+            setMeta("auto_sync_interval", clampInterval(raw));
+          }
+          log("info", `自动同步设置已更新（${autoSyncConfig().enabled ? "开" : "关"} / ${humanInterval(autoSyncConfig().interval)}）`);
+          scheduleAutoSync();     // 改完立刻重排，不用重启
+          const { enabled, interval } = autoSyncConfig();
+          return json({
+            ok: true, enabled, interval,
+            ...autoSyncRuntime(interval),
+            next_run_at: enabled ? autoSyncRuntime(interval).next_run_at : null,
+          });
+        }
+      }
+
       /* ---- 发现热门 ---- */
       // 默认阈值下发：前端开机取一次，之后用户输入什么就传什么。
       // 放在鉴权门内（和 /api/discover 同级），避免匿名探测。
@@ -1621,6 +1703,13 @@ const server = Bun.serve({
 });
 
 log("info", `开源雷达启动 http://${HOST}:${PORT}  token=${currentToken() ? "yes" : "no"}`);
+{
+  const { enabled, interval } = autoSyncConfig();
+  log("info", enabled
+    ? `自动同步：开，每 ${humanInterval(interval)}（上次成功 ${getMeta("last_sync_ok") || "从未"}）`
+    : "自动同步：关");
+  scheduleAutoSync();
+}
 
 // 优雅退出：Docker 里 bun 是 PID 1，不处理 SIGTERM 会被 10 秒后 SIGKILL，
 // WAL 文件残留、下次启动要重放恢复。这里关 SSE、停监听、checkpoint 后退出。
