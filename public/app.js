@@ -550,6 +550,18 @@ function miniMarkdown(md, base) {
 }
 
 /* ---------------- 发现热门 */
+// 自定义查询框非空时，下拉（排序/时间窗）完全不参与查询构建，
+// 但下拉仍原样显示，用户会以为是「最近活跃 · >200★ + 近1年新建」在生效。
+// 所以把真实生效条件分开写清楚。
+const DISCOVER_STARS = { stars: ">2000", updated: ">200" };
+function discoverConditionNote() {
+  if ($("#dQ").value.trim()) return "自定义语法（两个下拉不参与）";
+  const s = $("#dSort").value;
+  const d = $("#dDays").value;
+  const win = { 90: "近 3 个月", 365: "近 1 年", 1825: "近 5 年" }[d] || `近 ${d} 天`;
+  return `${s === "stars" ? "总 Star 榜" : "最近活跃"} · Star ${DISCOVER_STARS[s] || ""} · ${win}内新建`;
+}
+
 async function loadDiscover() {
   const q = new URLSearchParams({
     sort: $("#dSort").value,
@@ -564,7 +576,7 @@ async function loadDiscover() {
       return;
     }
     $("#dResult").innerHTML =
-      `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${d.rate?.remaining != null ? ` · 搜索配额剩余 ${d.rate.remaining}` : ""}</div>` +
+      `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 条件来源 <b>${esc(discoverConditionNote())}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${d.rate?.remaining != null ? ` · 搜索配额剩余 ${d.rate.remaining}` : ""}</div>` +
       d.items.map((r) => cardHTML({ ...r, source: "starred" }, "discover")).join("");
   } catch (e) {
     $("#dResult").innerHTML = `<div class="empty">失败：${esc(e.message)}</div>`;
