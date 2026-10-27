@@ -75,7 +75,7 @@ function renderSide() {
     .filter((t) => t.n > 0)
     .map(
       (t) => `<button class="chip ${state.tag === t.name ? "active" : ""}" data-tag="${esc(t.name)}"
-        style="${t.color ? `border-color:${esc(t.color)};color:${esc(t.color)}` : ""}">${esc(t.name)}<b>${t.n}</b></button>`
+        ${t.color ? `data-color="${esc(t.color)}"` : ""}>${esc(t.name)}<b>${t.n}</b></button>`
     )
     .join("") || `<span class="minihint">同步后自动归类</span>`;
   $("#langList").innerHTML = (st.langs || [])
@@ -153,7 +153,7 @@ async function openRepo(id) {
     <div class="sec">
       <label>我的中文简介（保存后不会被自动规则覆盖）</label>
       <textarea id="digEdit">${esc(r.digest || "")}</textarea>
-      <div style="margin-top:8px;display:flex;gap:8px">
+      <div class="btnrow">
         <button class="primary" id="digSave">保存简介</button>
         <button class="ghost" id="digRule">用规则重算</button>
       </div>
@@ -163,7 +163,7 @@ async function openRepo(id) {
       <div class="rowtags" id="tagEditor">
         ${[...new Set([...tags, ...allTags])].map((t) => `<button class="chip ${tags.includes(t) ? "active" : ""}" data-id2="${r.id}" data-tag2="${esc(t)}">${esc(t)}</button>`).join("")}
       </div>
-      <input id="newTag" placeholder="新标签，回车创建" style="margin-top:8px;background:var(--bg-card);border:1px solid var(--line);border-radius:9px;padding:8px 12px;width:240px" />
+      <input id="newTag" placeholder="新标签，回车创建" autocomplete="off" />
     </div>
     <div class="sec">
       <label>Topics</label>
@@ -173,7 +173,7 @@ async function openRepo(id) {
       <label>README</label>
       <div class="readme" id="readmeBox">加载中…</div>
     </div>
-    <div class="sec" style="display:flex;gap:8px">
+    <div class="sec btnrow">
       <button class="ghost" id="hideBtn">${r.hidden ? "恢复显示" : "隐藏该项目"}</button>
       <button class="ghost" id="starBtn">${r.source === "fork" ? "打开 Fork 源" : "去 GitHub 取消/加 Star"}</button>
     </div>`;
@@ -511,7 +511,7 @@ async function loadDiscover() {
       return;
     }
     $("#dResult").innerHTML =
-      `<div class="crumb" style="grid-column:1/-1">查询条件 <b>${esc(d.query)}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${d.rate?.remaining != null ? ` · 搜索配额剩余 ${d.rate.remaining}` : ""}</div>` +
+      `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${d.rate?.remaining != null ? ` · 搜索配额剩余 ${d.rate.remaining}` : ""}</div>` +
       d.items.map((r) => cardHTML({ ...r, source: "starred" }, "discover")).join("");
   } catch (e) {
     $("#dResult").innerHTML = `<div class="empty">失败：${esc(e.message)}</div>`;
@@ -544,7 +544,7 @@ async function loadReleases(check) {
             <span class="badge">${esc(r.tag || "")}</span></div>
           <div class="desc">${esc(r.name || "")}</div>
           <div class="digest">发布于 ${ago(r.published_at)}<span class="stat">★ ${fmt(r.stars)}</span></div>
-          <div class="foot"><a href="${esc(r.url)}" target="_blank" rel="noreferrer" style="color:var(--accent-2)">打开 Release</a><span class="sp"></span>
+          <div class="foot"><a href="${esc(r.url)}" target="_blank" rel="noreferrer" class="link">打开 Release</a><span class="sp"></span>
           <button class="act" data-act="open">详情</button></div>
         </article>`;
       }).join("")

@@ -28,13 +28,7 @@ GitHub 收藏（star + fork）本地看板。上位约定见 `../AGENTS.md`。
 - **README 相对锚点 `[#xxx]` 与 badge 语法**会原样裸露方括号，`miniMarkdown` 已补 `(#...)` 和 `[![](...)](...)` 两条替换。
 - **bun:sqlite 命名参数必须带 `$` 前缀绑定**：`prepare("VALUES ($id,$full_name)")` 配 `run({id,full_name})` 会静默绑空 → `NOT NULL constraint failed`。键必须写成 `{$id:..., $full_name:...}`（`saveRepo` 已统一加前缀）。之前 150 条是 Python 写库，没暴露；第一次走 JS upsert 就炸。
 - **star+json 里 `repo` 可能为 `null`**（仓库已删/转私有/无权限），paged() 会跳过并 warn，绝不能把包装对象当 repo 写库。
-- **绝不 pkill 用户浏览器**：验证前端只用 `agent-browser` 自己启动的实例。清理时按 `--user-data-dir=.../agent-browser-chrome-` 精确匹配进程，禁止 `pkill -f "Google Chrome"` 这类宽匹配——会杀掉用户正在用的 Chrome 和所有标签页。截图报 `ERR_INSUFFICIENT_RESOURCES` 时优先级：① 只重启 agent-browser daemon（`pkill -f agent-browser` + 删 `~/.agent-browser/default.pid`）② 换端口重开 ③ 改用 curl/静态检查，**不动用户浏览器**。
-  - **临时 Chrome 用完即收**：`agent-browser` 启动的 headless Chrome 不会自己退，反复调用会累积成几十个进程并吃满 fd（本轮实测 37 个 → `ERR_INSUFFICIENT_RESOURCES`）。规矩是：一轮截图验证结束后立刻 `agent-browser close`（没有该子命令就用下面这条精确清理），确认 `--user-data-dir=.../agent-browser-chrome-` 的进程数为 0 再进入下一步；不要留到下次验证时再叠。
-    ```bash
-    # 只杀 agent-browser 自己的实例，不碰用户 Chrome
-    ps -eo pid,command | grep "agent-browser-chrome-" | grep -v grep | awk '{print $1}' | xargs -r kill
-    ```
-  - **当轮验证结束顺手扫一遍**：`ps -eo command | grep -c "agent-browser-chrome-"`，非 0 就清。
+- **浏览器自动化进程回收**：通用规矩已上移到全局规范「工程纪律 → 浏览器自动化进程必须回收」，此处不重复。本项目只补充现场经验：`agent-browser` 的 headless Chrome 不会自己退，反复调用会累积成几十个进程并吃满 fd（实测 37 个 → `ERR_INSUFFICIENT_RESOURCES`）；报错时的恢复顺序是清残留 → 重启 daemon（删 `~/.agent-browser/default.pid`）→ 换端口 → 改 curl 直连接口验证。
 - **测试必须隔离数据库**：启动脚本支持 `RADAR_DB=/path/radar.db`（完整文件路径）+ `RADAR_GH`（mock API 基址）。没隔离会写进真库（本轮实测污染过，已清理并验证 150 行恢复）。
 - **测试实例用完当场停，并记住它占的端口**：测试端口与正式端口（8788）必须错开，`RADAR_DB` 指向的临时目录**不得位于 `/tmp` 清理范围内**（本轮事故：清理 `/tmp` 删掉了 8890 测试实例的库，实例带病运行，前端 SSE 无限 5s 重连 → 渲染进程 101% CPU 35 分钟拖死整机）。规矩：① 测试实例启动时把 PID 记到 `/tmp/radar-test.pid`；② 验证结束立刻 `kill $(cat /tmp/radar-test.pid)`；③ 清理 `/tmp` 前先 `pgrep -f server.mjs` 确认没有实例引用该路径；④ 只保留一个对外实例。
 - **前端 SSE 必须指数退避**：`EventSource.onerror` 里禁止写死固定间隔重连，否则服务端持续失败时渲染进程会陷入重连风暴。当前实现为 5s→10s→20s→40s 封顶 60s，重连前关闭旧连接。

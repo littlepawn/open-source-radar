@@ -805,14 +805,24 @@ const MIME = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
+// 未登录也要能取到的页面资源：登录页自身 + 它引用的 css/js + 主题预览页。
+// 新增 public/ 下的页面资源时，记得加进这里，否则未登录访问会被 302 回 /login。
+const PAGE_ALIAS = { "/login": "login.html", "/themes": "themes.html" };
+
+const ASSET_FILES = new Set([
+  "login.html", "login.js",
+  "themes.html", "themes.css", "themes.js",
+  "app.css", "app.js", "favicon.ico",
+]);
+
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json; charset=utf-8" } });
 
 function serveStatic(pathname) {
   const safe = pnorm(pathname).replace(/^(\.\.[/\\])+/, "");
   // /login → login.html（不能落到 index.html）
-  const alias = { "/login": "login.html", "/themes": "themes.html" };
-  const rel = alias[safe] || (safe === "/" ? "index.html" : safe);
+
+  const rel = PAGE_ALIAS[safe] || (safe === "/" ? "index.html" : safe);
   let p = join(PUBLIC_DIR, rel);
   if (!p.startsWith(PUBLIC_DIR)) return new Response("forbidden", { status: 403 });
   if (existsSync(p) && statSync(p).isDirectory()) p = join(p, "index.html");
@@ -821,8 +831,10 @@ function serveStatic(pathname) {
     if (!existsSync(p)) return new Response("not found", { status: 404 });
   }
   // 安全响应头：页面大量用 innerHTML 渲染 GitHub 来源的字符串（描述、topics、README），
-  // 一处转义漏掉就是存储型 XSS。CSP 不允许 inline script（本项目没有内联脚本），
-  // connect/img 自家域即可；README 里的外链图片放开 https img-src。
+  // 一处转义漏掉就是存储型 XSS。
+  // 注意：style-src/script-src 都是 'self'，内联 <script>、<style>、style="…" 属性
+  // 会被整条丢弃且不报错（attribute 保留、CSSOM 为空），页面表现为「样式全丢、按钮无效」。
+  // 所有页面资源必须外链到 public/ 下的 .js/.css，新增静态资源记得加进下面的放行名单。
   return new Response(readFileSync(p), {
     headers: {
       "content-type": MIME[extname(p)] || "application/octet-stream",
@@ -954,7 +966,11 @@ const server = Bun.serve({
     /* ---- 静态资源：登录页放行，其余在无会话时重定向 ---- */
     if ((req.method === "GET" || req.method === "HEAD") && !p.startsWith("/api/")) {
       const isLoginPage = p === "/login" || p === "/login.html";
-      const isAsset = /\/(app\.css|app\.js|themes\.html|favicon\.ico)$/.test(p);
+      // 放行登录页自身及其所需资源。login.js/themes.* 是外链化后新增的，
+      // 漏一个就会 302 回 /login，页面静默失去交互（曾整页无样式无脚本）。
+      // 用「按 alias 解析后的文件名」判断，避免 /themes 这种短路径漏网
+      // （它 alias 到 themes.html，但路径本身不以 .html 结尾，正则匹配不到 → 302）。
+      const isAsset = ASSET_FILES.has(PAGE_ALIAS[p] || p.replace(/^\//, ""));
       if (!isLoginPage && !isAsset) {
         // 未登录直接跳登录页（首屏拦截）
         if (!ENV_TOKEN && !sessionInfo(req)) {
