@@ -246,6 +246,10 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .foot .sp { margin-left: auto; }
 .act { background: none; border: 0; color: var(--text-faint); padding: 2px 5px; border-radius: 6px; font-size: 12px; }
 .act:hover { background: var(--bg-hover); color: var(--text); }
+/* 卡片快捷动作：常显。试过 hover 才显形，但 hover 态在部分浏览器/触屏上不可靠，
+   而用户要的就是「不进抽屉就能操作」——藏起来等于没做。 */
+.card .quick { display: flex; gap: 2px; }
+.card .quick .act.on { color: var(--accent); }
 
 .empty { text-align: center; color: var(--text-faint); padding: 60px 0; }
 

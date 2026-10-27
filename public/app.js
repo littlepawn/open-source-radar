@@ -206,7 +206,13 @@ function cardHTML(r, ctx = "repo") {
       ${r.upstream ? `<span class="up">fork 自 ${esc(r.upstream)}</span>` : ""}
       <span>${ctx === "discover" ? "建于" : r.source === "fork" ? "fork 于" : "star 于"} ${ago(ctx === "discover" ? r.created_at : (r.starred_at || r.pushed_at))}</span>
       ${r.latest_tag ? `<span class="sp">${esc(r.latest_tag)} · ${ago(r.latest_release_at)}</span>` : '<span class="sp"></span>'}
-      <button class="act" data-act="open" title="详情">详情</button>
+      <span class="quick">
+        <button class="act ${r.toread ? "on" : ""}" data-act="qtoread" title="${r.toread ? "移出待读" : "加入待读"}">${r.toread ? "✓待读" : "待读"}</button>
+        <button class="act ${r.dropped ? "on" : ""}" data-act="qdrop" title="${r.dropped ? "取消放弃标记" : "标记放弃（不会取消 star）"}">${r.dropped ? "✓放弃" : "放弃"}</button>
+        <button class="act ${r.hidden ? "on" : ""}" data-act="qhide" title="${r.hidden ? "恢复显示" : "隐藏（可随时在「已隐藏」恢复）"}">${r.hidden ? "取消隐藏" : "隐藏"}</button>
+        <a class="act" href="${esc(r.html_url)}" target="_blank" rel="noreferrer" data-stop title="在 GitHub 打开">↗</a>
+        <button class="act" data-act="open" title="详情">详情</button>
+      </span>
     </div>
   </article>`;
 }
@@ -819,6 +825,36 @@ document.addEventListener("click", async (e) => {
         if (sec) setTimeout(() => sec.scrollIntoView({ block: "start", behavior: "smooth" }), 60);
       }
     }
+    return;
+  }
+  // 卡片快捷动作：待读/放弃/隐藏不进抽屉就地改。放弃与隐藏是"类删除"操作，
+  // 必须二次确认（可撤销，但用户手滑点到的第一反应是"坏了"）。
+  const quick = e.target.closest("[data-act='qtoread'],[data-act='qdrop'],[data-act='qhide']");
+  if (quick) {
+    e.preventDefault();
+    const c = quick.closest(".card");
+    const id = Number(c?.dataset.id);
+    const row = state.items.find((x) => x.id === id);
+    if (!row) return;
+    const act = quick.dataset.act;
+    const undoHint = {
+      qdrop: "放弃只是不再提醒，不会取消 star；可在「已放弃」里一键恢复。",
+      qhide: "隐藏后从列表消失，但不会取消 star；在侧栏「已隐藏」里能恢复。",
+    }[act];
+    if (undoHint && !confirm(`${row.name || row.full_name}\n\n${undoHint}\n\n确定${act === "qdrop" ? "标记放弃" : "隐藏"}吗？`)) return;
+    try {
+      if (act === "qhide") {
+        await api("/api/hide", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, hidden: !row.hidden }) });
+        row.hidden = !row.hidden;
+        toast(row.hidden ? "已隐藏，可在「已隐藏」里恢复" : "已恢复显示");
+      } else {
+        const patch = act === "qtoread" ? { toread: !row.toread } : { dropped: !row.dropped };
+        const d = await api("/api/repo/flag", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, ...patch }) });
+        Object.assign(row, d);
+        toast(act === "qtoread" ? (row.toread ? "已加入待读" : "已移出待读") : (row.dropped ? "已标记放弃" : "已取消放弃"));
+      }
+      refresh();
+    } catch (err) { toast("操作失败：" + err.message, true); }
     return;
   }
   if (openBtn) {
