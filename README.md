@@ -31,6 +31,7 @@ Token 只在环境变量里，不落盘、不打日志。建法：<https://githu
 | 能力 | 说明 |
 |---|---|
 | **同步** | `/user/starred` 分页拉 star（保留 `starred_at` 时间），`/users/:login/repos` 拉自己的 fork；再次同步是增量的，追平上次边界即停 |
+| **自动同步** | 默认开启、每 2 小时拉一次，间隔在「设置」页改（下限 15 分钟）。服务重启后按「上次同步 + 间隔」重算，错过就立刻补 |
 | **fork 上游** | 每个 fork 记录 `upstream`（`vaxilu/x-ui` 这类），卡片和详情都显示「fork 自 xxx」 |
 | **中文简介** | 规则引擎按描述 + topics + 语言生成一句中文定位，原作者写了中文就优先显示原文 |
 | **自动标签** | 31 条规则映射到业务域（AI / 大模型、容器 / 运维、网络代理、安卓逆向…），可手工增删 |
@@ -128,6 +129,7 @@ docker pull littlepawn/open-source-radar:2.1.0
 | POST | `/api/repo/tag` | 加/删标签 `{repo_id, name 或 tag_id, action}` |
 | POST | `/api/hide` | 隐藏/恢复 `{id, hidden}` |
 | POST | `/api/sync` | 触发同步 `{kind: all\|starred\|fork}` |
+| GET/POST | `/api/settings/autosync` | 自动同步开关与间隔；GET 另返回 `next_run_at`、`last_error` |
 | GET | `/api/events` | SSE，同步进度推送 |
 | GET | `/api/discover?sort=&days=&q=&page=` | 热门发现 |
 | POST | `/api/releases/check` | 检查新版本 `{limit}` |
@@ -151,12 +153,20 @@ docker pull littlepawn/open-source-radar:2.1.0
 ## 文件
 
 ```
-server.mjs                   后端（路由 + GitHub 客户端 + 规则引擎 + SQLite + 鉴权）
+server.mjs                   后端（路由 + GitHub 客户端 + SQLite + 鉴权）
+lib/rules.mjs                中文简介规则引擎（唯一规则表）
+lib/insight.mjs              停滞判定 / 清理候选 / fork 落后 / 相似度
+lib/ai.mjs                   AI 对话：预算裁剪、消息拼装、服务商预设
+lib/discover.mjs             发现页阈值收敛与查询串拼装
+lib/schedule.mjs             自动同步时间计算（ISO 解析、错过即补、间隔收敛）
 public/index.html            主看板结构
 public/app.css               主题与布局（dark/light 各一套 CSS 变量）
 public/app.js                前端逻辑（零依赖）
+public/md.js                 README 渲染器（UMD，浏览器与测试共用）
+public/ai.js                 设置页与单仓 AI 对话
 public/login.html/js         登录页
 public/themes.html/css/js    主题预览页
+tests/*.test.mjs             纯逻辑单测（bun test）
 scripts/import_mcp_cache.py  从 data/mcp-cache.json 批量入库（保留手工简介）
 scripts/merge_mcp_page.py    分页抓取结果合并去重
 scripts/gh-cache.mjs         本地 GitHub 缓存/ETag 代理（可选）
