@@ -290,16 +290,22 @@ function rulePreview(r, topics) {
 
 // README 来自外部仓库，放行的 HTML 标签与属性都做白名单，
 // 事件处理器、style、iframe/script 一律丢弃。
-const MD_VOID = new Set(["img", "br", "hr", "input", "source", "wbr", "col"]);
+const MD_VOID = new Set(["img", "br", "hr", "input", "wbr", "col"]);
 const MD_BLOCK = new Set([
   "div", "p", "center", "details", "summary", "table", "thead", "tbody", "tr", "td", "th",
   "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code",
   "a", "b", "i", "strong", "em", "del", "s", "u", "sub", "sup", "small", "br", "hr",
-  "img", "picture", "figure", "figcaption", "kbd", "mark", "span", "section", "article",
+  "img", "picture", "source", "figure", "figcaption", "kbd", "mark", "span", "section", "article",
+  "video", "audio", "track", "abbr", "time", "nav", "header", "footer", "main",
 ]);
 const MD_ATTR = {
   a: ["href", "title"],
-  img: ["src", "alt", "title", "width", "height"],
+  img: ["src", "srcset", "alt", "title", "width", "height"],
+  // <picture> 的暗色模式徽章普遍写成 <source srcset=…>，不放行 srcset 会退化成
+  // 一串裸露的 &lt;source …&gt; 文本（mise / llama.cpp 这类 README 都会中招）。
+  source: ["srcset", "media", "type", "sizes", "width", "height"],
+  video: ["src", "poster", "width", "height", "controls", "loop", "muted", "playsinline"],
+  audio: ["src", "controls", "loop"],
   td: ["colspan", "rowspan"], th: ["colspan", "rowspan"],
   div: ["align"], p: ["align"], h1: ["align"], h2: ["align"], h3: ["align"],
   center: ["align"], table: ["align"], span: ["title"],
@@ -321,6 +327,7 @@ function mdAttrs(tag, raw, base) {
       if (!/^https?:\/\//i.test(val) && !val.startsWith("#")) continue;
     }
     if (name === "src") {
+      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val) && !/^https?:\/\//i.test(val) && !/^data:image\//i.test(val)) continue;
       if (/^https?:\/\//i.test(val) || /^data:image\//i.test(val)) { /* 原样放行 */ }
       else if (base) {
         // 仓库相对图片（./docs/a.png、/web/logo.png）：改写成 CDN 地址。
@@ -331,6 +338,26 @@ function mdAttrs(tag, raw, base) {
       } else {
         continue; // 没有 base 就丢弃，避免破图标
       }
+    }
+    if (name === "srcset") {
+      // srcset 是「url 描述符, url 描述符」，逐个 URL 单独改写相对路径
+      const fixed = String(val).split(",").map((part) => {
+        const seg = part.trim();
+        if (!seg) return "";
+        const [u, ...desc] = seg.split(/\s+/);
+        let nu = u;
+        // 带 scheme（javascript:/vbscript:/file: …）但不是 http(s)/data:image 的，直接丢
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) return "";
+        if (!/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) {
+          if (!base) return "";
+          nu = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${u.replace(/^\.?\//, "")}`;
+        }
+        return [nu, ...desc].join(" ");
+      }).filter(Boolean);
+      // 一个 URL 都不剩就整条丢掉，避免出现空的 srcset=""
+      if (!fixed.length) continue;
+      out.push(`${name}="${esc(fixed.join(", "))}"`);
+      continue;
     }
     out.push(`${name}="${esc(val)}"`);
   }
@@ -372,8 +399,9 @@ function miniMarkdown(md, base) {
       // 再挂 target/rel 只是噪音（空 href 的锚点在浏览器里等同纯文本）
       const linkExtras = tag === "a" && /\shref="/.test(a) ? ' target="_blank" rel="noreferrer"' : "";
       const loading = tag === "img" ? ' loading="lazy"' : "";
-      // 相对路径的图片在本地没有 base，src 被 mdAttrs 丢掉后 <img> 只剩一个破图标
-      if (tag === "img" && !/\ssrc=/.test(a)) return "";
+      // 相对路径的图片在本地没有 base，src 被 mdAttrs 丢掉后 <img> 只剩一个破图标。
+      // 但响应式图片可以只有 srcset（合法写法），两者都空才丢。
+      if (tag === "img" && !/\ssrc=/.test(a) && !/\ssrcset=/.test(a)) return "";
       return hold(`<${tag}${a}${loading}${linkExtras}${selfClose ? (MD_VOID.has(tag) ? ">" : " />") : ">"}`);
     });
     // 其余内容一律转义；已在上一步转义过的 & 不再二次转义
@@ -417,8 +445,10 @@ function miniMarkdown(md, base) {
     if (/^\u0000\d+\u0000$/.test(t)) { closeList(); out.push(t); continue; }
 
     // HTML 块：<div ...> / </div> 这类独占一行且成对出现的容器
-    const htmlOpen = t.match(/^<([a-zA-Z][\w-]*)(\s[^>]*)?>$/);
-    if (htmlOpen && !MD_VOID.has(htmlOpen[1].toLowerCase())) { inHtmlBlock++; }
+    // 自闭合写法 <div …/> 不增加块级深度，否则这类标签之后的整篇
+    // 都会滞留在 html 块里（最终 </body> 失配 → 全部当容器内文本）
+    const htmlOpen = t.match(/^<([a-zA-Z][\w-]*)(\s[^>]*)?(\/?)>$/);
+    if (htmlOpen && !MD_VOID.has(htmlOpen[1].toLowerCase()) && !htmlOpen[3]) { inHtmlBlock++; }
     if (inHtmlBlock > 0) {
       // GitHub 在 <div align="center"> 里照常渲染 markdown（README 的 # 标题、
       // 列表都写在容器里），所以块内仍要认标题和列表，纯文本行走行内。
@@ -479,6 +509,19 @@ function miniMarkdown(md, base) {
         out.push(`<p>${rows.map((r) => inline(r)).join("<br>")}</p>`);
       }
       continue;
+    }
+
+    // 一行里既有块级容器标签又有正文时（`<table>…</table>` 后跟说明、
+    // `<picture>…</picture> <picture>…</picture>` 之类），包 <p> 会产生
+    // <p><table> 这种非法嵌套，浏览器会把 <p> 提前闭合，视觉上多出空行。
+    // 以块级标签开头且整行内部标签都成对的，直接顶格输出。
+    const startsWithBlock = /^<(?:div|p|center|details|summary|table|thead|tbody|tr|td|th|h[1-6]|ul|ol|li|blockquote|pre|picture|figure|section|article)\b/i.test(t);
+    if (startsWithBlock) {
+      const inner = inline(t);
+      const opens = (inner.match(/<(?!\/)([a-zA-Z][\w-]*)/g) || []).length;
+      const closes = (inner.match(/<\/([a-zA-Z][\w-]*)>/g) || []).length +
+                     (inner.match(/<(?:img|br|hr|input|wbr|col)\b[^>]*>/g) || []).length;
+      if (opens > 0 && opens === closes) { out.push(inner); continue; }
     }
 
     closeList();
