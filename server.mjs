@@ -312,9 +312,12 @@ async function gh(path, { retry = 3, accept } = {}) {
     if (tk) headers.Authorization = `Bearer ${tk}`;
     let res;
     try {
-      res = await fetch(url, { headers });
+      // 没有超时会一直挂到 undici 的 300s 默认值，前端只看到 "fetch failed"。
+      // GitHub 单次响应极少超过 15s，超时就当网络错误重试。
+      res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
     } catch (e) {
-      if (attempt === retry) throw new Error(`网络错误 ${url}: ${e.message}`);
+      const why = e.name === "TimeoutError" ? "15s 超时" : e.message;
+      if (attempt === retry) throw new Error(`网络错误 ${url}: ${why}（已重试 ${retry} 次）`);
       await sleep(800 * (attempt + 1));
       continue;
     }
@@ -707,9 +710,22 @@ async function fetchReadme(row) {
   };
   const tk = currentToken();
     if (tk) headers.Authorization = `Bearer ${tk}`;
-  const res = await fetch(`${GH}/repos/${row.full_name}/readme`, { headers });
+  let res;
+  try {
+    res = await fetch(`${GH}/repos/${row.full_name}/readme`, {
+      headers,
+      signal: AbortSignal.timeout(15000),
+    });
+  } catch (e) {
+    const why = e.name === "TimeoutError" ? "15s 超时" : e.message;
+    throw new Error(`连不上 GitHub（${why}），稍后重试`);
+  }
   if (res.status === 404) return "";
-  if (!res.ok) throw new Error(`README 获取失败 ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    const hint = /access blocked/i.test(body) ? "仓库被 GitHub 封禁" : `HTTP ${res.status}`;
+    throw new Error(`README 获取失败：${hint}`);
+  }
   const text = (await res.text()).slice(0, 200000);
   db.query("UPDATE repos SET readme=? WHERE id=?").run(text, row.id);
   return text;
