@@ -112,7 +112,10 @@ addColumn("repos", "dropped_at", "dropped_at TEXT");
 addColumn("repos", "fork_behind", "fork_behind INTEGER");      // fork 落后上游 commit 数，null=未比对
 addColumn("repos", "fork_ahead", "fork_ahead INTEGER");
 addColumn("repos", "fork_checked_at", "fork_checked_at TEXT");
-addColumn("repos", "branch", "branch TEXT");                    // 默认分支，fork 对比要两端同名
+addColumn("repos", "branch", "branch TEXT");
+addColumn("repos", "last_seen_at", "last_seen_at TEXT");   // 本轮同步里最后一次被上游列到的时间
+addColumn("repos", "detached", "detached INTEGER DEFAULT 0"); // 上游已无此 star/fork（远端取消或仓库删了）
+addColumn("repos", "detached_at", "detached_at TEXT");     // 首次发现它消失的时间
 db.exec(`CREATE INDEX IF NOT EXISTS idx_repos_dropped ON repos(dropped);`);
 addColumn("repos", "ai_summary", "ai_summary TEXT");
 db.exec(`
@@ -565,10 +568,10 @@ const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : S
 const upsertRepo = db.prepare(`
 INSERT INTO repos (id, full_name, owner, name, html_url, description, homepage, language, topics,
   stars, forks, issues, watchers, size_kb, license, archived, is_fork, created_at, pushed_at,
-  starred_at, source, branch, fetched_at)
+  starred_at, source, branch, fetched_at, last_seen_at)
 VALUES ($id,$full_name,$owner,$name,$html_url,$description,$homepage,$language,$topics,
   $stars,$forks,$issues,$watchers,$size_kb,$license,$archived,$is_fork,$created_at,$pushed_at,
-  $starred_at,$source,$branch,$fetched_at)
+  $starred_at,$source,$branch,$fetched_at,$last_seen_at)
 ON CONFLICT(id) DO UPDATE SET
   full_name=excluded.full_name, owner=excluded.owner, name=excluded.name,
   html_url=excluded.html_url, description=excluded.description, homepage=excluded.homepage,
@@ -577,8 +580,11 @@ ON CONFLICT(id) DO UPDATE SET
   license=excluded.license, archived=excluded.archived, is_fork=excluded.is_fork,
   created_at=excluded.created_at, pushed_at=excluded.pushed_at,
   starred_at=COALESCE(excluded.starred_at, repos.starred_at),
-  source=excluded.source, fetched_at=excluded.fetched_at,
-  branch=COALESCE(NULLIF(excluded.branch,''), repos.branch)
+  source=excluded.source, fetched_at=excluded.fetched_at, last_seen_at=excluded.last_seen_at,
+  branch=COALESCE(NULLIF(excluded.branch,''), repos.branch),
+  -- 上游又列到它了，说明没取消：撤销 detached。不加这行的话，重新 star 的仓库
+  -- 会一直躺在「已取消」里不出来。
+  detached=0, detached_at=NULL
 `);
 
 const tagByName = (name) => {
@@ -620,6 +626,7 @@ function normalize(r, source, starredAt) {
     // 这里顺手落库，避免每个 fork 再单独打一次 /repos/:full_name。
     branch: r.default_branch || "",
     fetched_at: now(),
+    last_seen_at: now(),
   };
 }
 
@@ -707,6 +714,7 @@ db.query("DELETE FROM events WHERE id <= (SELECT MAX(id)-2000 FROM events)").run
 class StopPaging extends Error {}
 
 async function syncStarred({ incremental = true } = {}) {
+  const seen = new Set();
   syncState.phase = "拉取 starred";
   // 匿名环境 /user/* 会 401；实测匿名可读 /users/:login/starred，且支持 star+json 取 starred_at
   let endpoint = "/user/starred";
@@ -727,6 +735,7 @@ async function syncStarred({ incremental = true } = {}) {
         if (r.starred_at && (oldest === null || r.starred_at < oldest)) oldest = r.starred_at;
         const row = saveRepo(r, "starred", r.starred_at || null);
         if (!row) { syncState.skipped = (syncState.skipped || 0) + 1; continue; }
+        seen.add(row.id);
         const tags = applyAutoTags(row);
         for (const t of tags) addRepoTag.run(row.id, tagByName(t).id, "auto");
         count++;
@@ -747,9 +756,12 @@ async function syncStarred({ incremental = true } = {}) {
   });
   setMeta("stars_last_oldest", oldest || last || "");
   if (stop) log("info", `增量同步：已追平上次同步边界（${String(last).slice(0, 10)}），停止翻页`);
-  return count;
+  // full=false 表示这趟没翻到底（增量提前刹车）。判「谁消失了」必须在翻到底的前提下做，
+  // 否则后面那些根本没扫到的仓库会被当成「上游没了」，整库误标。
+  return { count, seen, full: !stop, oldest };
 }
 async function syncForks() {
+  const seen = new Set();
   syncState.phase = "拉取 fork";
   const me = await gh("/user");
   if (me.notFound) throw new Error("无法读取 /user，token 是否有效？");
@@ -758,13 +770,15 @@ async function syncForks() {
   if (!Array.isArray(data)) throw new Error("读取自己的仓库失败");
   let forks = data.filter((r) => r.fork);
   let page = 2;
-  // 分页补全
-  while (data.length === 100 || forks.length) {
-    if (page > 20) break;
+  // 分页补全。原写法 while (data.length === 100 || forks.length) 里的 data 是第一页的，
+  // 永不更新 → 条件退化成 while(true)，只靠 page>20 兜底，语义不明。这里显式记 full。
+  let full = data.length < 100;
+  while (!full) {
+    if (page > 20) { log("warn", "fork 超过 20 页，本次没翻完，跳过「已取消」判定"); break; }
     const more = await gh(`/users/${login}/repos?type=owner&per_page=100&sort=updated&page=${page}`);
-    if (!Array.isArray(more) || more.length === 0) break;
+    if (!Array.isArray(more) || more.length === 0) { full = true; break; }
     forks = forks.concat(more.filter((r) => r.fork));
-    if (more.length < 100) break;
+    if (more.length < 100) { full = true; break; }
     page++;
   }
   // fork 上游：列表接口不返回 parent（实测 25 个 fork 全无该字段），按需单独查详情
@@ -778,6 +792,7 @@ async function syncForks() {
       continue;
     }
     if (!row) continue;
+    seen.add(row.id);
     const tags = applyAutoTags(row);
     for (const t of tags) addRepoTag.run(row.id, tagByName(t).id, "auto");
     const known = db.query("SELECT upstream FROM repos WHERE id=?").get(row.id);
@@ -796,7 +811,45 @@ async function syncForks() {
     syncState.done = count;
     if (count % 10 === 0) broadcast({ type: "progress", ...syncState });
   }
-  return { count, login };
+  return { count, login, seen, full };
+}
+
+/**
+ * 同步收尾：把「库里有、但这一轮上游没列到」的 starred/fork 标记为 detached。
+ *
+ * 为什么必须做：upsert 只会更新/新增，从不删除。用户在 GitHub 上取消了 star，
+ * 本地库里那条记录会永远留着，列表越用越脏，且和 GitHub 上的真实状态对不上。
+ *
+ * 为什么不能直接 DELETE：本地挂着手写备注、自定义标签、待读/放弃标记、README 缓存，
+ * 删掉就没了。改成打标记 + 默认不展示，用户想找回还能在「已取消」里看见。
+ *
+ * 前提条件（缺一不可，否则会把整库误标）：
+ *   ① 这一轮真的跑完了（不是中途抛错中断）
+ *   ② 这一轮确实从头翻到了尾（incremental 提前 StopPaging 时不能判）
+ *   ③ 上游至少返回了 1 条（空结果几乎都是接口异常，不是用户清空了收藏）
+ */
+function markDetached(source, seen, full, since) {
+  // 没翻到底就别判：只扫了前几页，后面全是「没扫到」而不是「上游没了」。
+  // 唯一的例外是增量同步：它虽然提前刹车，但扫过的区间是完整的——
+  // /user/starred 按 starred_at 倒序返回，扫到 oldest 就停，所以 [oldest, now] 这一段的
+  // 每一页都翻过了。落在这一段里却没出现的，就是真取消了。
+  if (!full && !since) { log("info", `${source}：本次未翻到底，跳过「已取消」判定`); return 0; }
+  if (!seen || seen.size === 0) return 0;
+  // 只处理这一轮扫过的那类：star 轮就只判 starred，fork 轮只判 fork。
+  // 混着判会把「只同步了 star」时所有 fork 全标成已取消。
+  let sql = "SELECT id FROM repos WHERE source=? AND COALESCE(detached,0)=0";
+  const args = [source];
+  if (!full && since) {
+    sql += " AND starred_at IS NOT NULL AND starred_at >= ?";
+    args.push(since);
+  }
+  const rows = db.query(sql).all(...args);
+  const gone = rows.map((r) => r.id).filter((id) => !seen.has(id));
+  if (gone.length === 0) return 0;
+  const upd = db.prepare("UPDATE repos SET detached=1, detached_at=? WHERE id=?");
+  for (const id of gone) upd.run(now(), id);
+  log("info", `${source}：上游已无 ${gone.length} 个（取消 star / 删了仓库），已标记 detached${full ? "" : `（增量区间 ${String(since).slice(0, 10)} 起）`}`);
+  return gone.length;
 }
 
 async function runSync(kind = "all") {
@@ -806,17 +859,23 @@ async function runSync(kind = "all") {
   let stars = 0, forks = 0;
   let t0 = Date.now();
   try {
+    let detached = 0;
     if (kind === "all" || kind === "starred") {
-      stars = await syncStarred();
+      const r = await syncStarred();
+      stars = r.count;
       setMeta("stars_synced_at", now());
       if (!LOGIN()) setMeta("login", process.env.RADAR_LOGIN || "");
+      // 增量同步会提前停止翻页，此时 seen 只是"最近的一部分"，拿它判谁消失了必然误杀
+      detached += markDetached("starred", r.seen, r.full, r.oldest);
     }
     if (kind === "all" || kind === "fork") {
       const r = await syncForks();
       forks = r.count;
       setMeta("forks_synced_at", now());
       setMeta("login", r.login);
+      detached += markDetached("fork", r.seen, r.full);
     }
+    syncState.detached = detached;
     setMeta("last_sync_ok", now());
     setMeta("last_sync_error", "");
     log("info", `同步完成：star ${stars}，fork ${forks}，耗时 ${((Date.now() - t0) / 1000).toFixed(1)}s`);
@@ -924,7 +983,7 @@ async function checkReleases(limit = 25) {
   const rows = db
     .query(
       `SELECT id, full_name, pushed_at FROM repos
-        WHERE source='starred' AND archived=0
+        WHERE source='starred' AND archived=0 AND COALESCE(detached,0)=0
         ORDER BY stars DESC LIMIT ?`
     )
     .all(limit);
@@ -1027,10 +1086,19 @@ function repoWhere({ q = "", source = "", tag = "", lang = "", scope = "all", vi
   // scope=hidden 时那项根本没 push，indexOf 返回 -1 → where[-1]=... 无效，
   // 隐藏过滤消失，scope=hidden 会返回全部仓库（实测 226 条）。
   const wantHidden = scope === "hidden" || source === "hidden";
+  // 「已取消」= 本地库里有、但这一轮同步上游没再列到（远端取消 star / 仓库被删）。
+  // 默认视图必须排掉它们，否则会出现「GitHub 上已经不 star 了，本地列表还挂着」的对不上。
+  const wantDetached = scope === "detached" || source === "detached";
   where.push(wantHidden ? "h.repo_id IS NOT NULL" : "h.repo_id IS NULL");
+  // 「已隐藏」是用户主动的操作，它的语义是「我隐藏了哪些」——不该被 detached 再过滤一遍，
+  // 否则一个既隐藏、上游又取消了的仓库会两个入口都看不到，等于凭空消失。
+  // 反过来「已取消」排掉 hidden，因为那些在「已隐藏」里已经看得到了，不重复出现。
+  if (!wantHidden) {
+    where.push(wantDetached ? "COALESCE(r.detached,0) = 1" : "COALESCE(r.detached,0) = 0");
+  }
   if (source === "starred" || source === "fork" || source === "discover") {
     where.push("r.source = ?"); args.push(source);
-  } else if (!wantHidden) {
+  } else if (!wantHidden && !wantDetached) {
     // 默认「全部」视图不掺发现页收编的临时仓库，只在我明确点「发现过的」时出现
     where.push("r.source != 'discover'");
   }
@@ -1229,7 +1297,12 @@ const server = Bun.serve({
           fork: cnt({ scope: "all", source: "fork" }),
           discover: cnt({ scope: "all", source: "discover" }),
           // 「已隐藏」不是 scope 过滤能算出来的（hidden 表是单独的），单独数
+          // hidden 按 hidden 表数全量：既隐藏又取消的也要算进去，不然用户找不到它
           hidden: db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0,
+          // 已取消：上游同步里消失的。默认视图已排除，这里单独给个数让用户能翻回去看。
+          // 排除已隐藏的（那部分在「已隐藏」里已经能看到），两边不重复计数。
+          detached: db.query(`SELECT COUNT(*) n FROM repos r
+            WHERE COALESCE(r.detached,0)=1 AND r.id NOT IN (SELECT repo_id FROM hidden)`).get()?.n || 0,
           toread: cnt({ scope: "all", view: "toread" }),
           dropped: cnt({ scope: "all", view: "dropped" }),
           stale: cnt({ scope: "all", view: "stale" }),
@@ -1243,12 +1316,12 @@ const server = Bun.serve({
           FROM tags t
           LEFT JOIN repo_tags rt ON rt.tag_id=t.id
           LEFT JOIN repos v ON v.id=rt.repo_id AND COALESCE(v.dropped,0)=0 AND v.source!='discover'
-            AND v.id NOT IN (SELECT repo_id FROM hidden)
+            AND COALESCE(v.detached,0)=0 AND v.id NOT IN (SELECT repo_id FROM hidden)
           GROUP BY t.id ORDER BY COALESCE(t.parent,''), n DESC, t.name`).all();
         const langs = db.query(`
           SELECT language, COUNT(*) n FROM repos r
           WHERE language != '' AND COALESCE(dropped,0) = 0 AND source != 'discover'
-            AND id NOT IN (SELECT repo_id FROM hidden)
+            AND COALESCE(detached,0) = 0 AND id NOT IN (SELECT repo_id FROM hidden)
           GROUP BY language ORDER BY n DESC LIMIT 40`).all();
         return json({
           login: getMeta("login"),
@@ -1262,6 +1335,7 @@ const server = Bun.serve({
             fork: viewCount.fork,
             discover: viewCount.discover,
             hidden: viewCount.hidden,
+            detached: viewCount.detached,
             toread: viewCount.toread,
             dropped: viewCount.dropped,
             stale: viewCount.stale,
@@ -1303,7 +1377,11 @@ const server = Bun.serve({
         // 相似仓库：同库内算加权 Jaccard，纯粹为「还可能有这些」的推荐位。
         // 标签一次查全再按 repo_id 分组——早先每个仓库单独查一次，228 个库就是
         // 228 条 SQL，抽屉每次打开都全表扫一遍。
-        const all = db.query("SELECT id, full_name, owner, language, topics, description, stars FROM repos").all();
+        // 相似推荐只从「还在我库里、我没主动藏起来」的仓库里挑：
+        // 上游已取消(detached)的不该再被推荐回来，已隐藏的是用户主动不想看的。
+        // discover 保留——那是发现页看过的别人的仓库，作为「还可能有这些」是有价值的。
+        const all = db.query(`SELECT id, full_name, owner, language, topics, description, stars FROM repos r
+          WHERE COALESCE(r.detached,0)=0 AND r.id NOT IN (SELECT repo_id FROM hidden)`).all();
         const tagByRepo = new Map();
         for (const t of db.query("SELECT rt.repo_id, t.name FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id").all()) {
           if (!tagByRepo.has(t.repo_id)) tagByRepo.set(t.repo_id, []);
@@ -1343,8 +1421,9 @@ const server = Bun.serve({
         const limit = Math.min(50, Math.max(1, Number(b.limit) || 50));
         // 只比没比过的，或用户显式要求重算的
         const rows = b.force
-          ? db.query("SELECT * FROM repos WHERE is_fork=1 LIMIT ?").all(limit)
-          : db.query("SELECT * FROM repos WHERE is_fork=1 AND fork_checked_at IS NULL LIMIT ?").all(limit);
+          // 每个 fork 都要打一次 compare，别浪费在已经取消/隐藏的仓库上
+          ? db.query("SELECT * FROM repos WHERE is_fork=1 AND COALESCE(detached,0)=0 AND id NOT IN (SELECT repo_id FROM hidden) LIMIT ?").all(limit)
+          : db.query("SELECT * FROM repos WHERE is_fork=1 AND COALESCE(detached,0)=0 AND fork_checked_at IS NULL AND id NOT IN (SELECT repo_id FROM hidden) LIMIT ?").all(limit);
         const out = [];
         for (const r of rows) {
           // upstream 形如 owner/repo；归一化时已存好。缺就得先补一次详情，否则没法比。
@@ -1377,7 +1456,12 @@ const server = Bun.serve({
 
       /* ---- 智能清理建议：只出清单，绝不自动取消 star ---- */
       if (p === "/api/cleanup") {
-        const rows = db.query("SELECT * FROM repos WHERE 1=1").all();
+        // 只在「还在我的库里」的范围内给建议：
+        // 上游已取消(detached)、发现页收编(discover)、已隐藏 都不该出现在清理清单里——
+        // 它们要么已经不在我的收藏里，要么本来就是别人的仓库。
+        const rows = db.query(`SELECT * FROM repos r
+          WHERE COALESCE(r.detached,0)=0 AND r.source != 'discover'
+            AND r.id NOT IN (SELECT repo_id FROM hidden)`).all();
         const cand = cleanupCandidates(rows, Date.now(), {
           idleDays: Number(u.searchParams.get("idleDays") || 365),
           neverOpenedDays: Number(u.searchParams.get("neverOpenedDays") || 180),
@@ -1621,6 +1705,14 @@ const server = Bun.serve({
           },
         });
         log(res.ok ? "info" : "error", `${b.starred === false ? "取消 star" : "star"} ${row.full_name} → ${res.status}`);
+        // 写回本地，别等下一轮同步：点完取消 star，列表里它就该立刻不是「我的收藏」；
+        // 点回来也要能立刻撤销 detached，否则得等两小时才恢复。
+        // 只对 source='starred' 生效——fork 不是 star 来的，取消 star 跟它没关系。
+        if (res.ok && b.starred === false && row.source === "starred") {
+          db.query("UPDATE repos SET detached=1, detached_at=? WHERE id=?").run(now(), row.id);
+        } else if (res.ok && b.starred !== false && row.source === "starred") {
+          db.query("UPDATE repos SET detached=0, detached_at=NULL WHERE id=?").run(row.id);
+        }
         return json({ ok: res.ok, status: res.status });
       }
 

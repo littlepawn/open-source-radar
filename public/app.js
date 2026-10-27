@@ -126,6 +126,7 @@ function renderSide() {
   $("#nFork").textContent = st.counts?.fork || 0;
   $("#nHide").textContent = st.counts?.hidden || 0;
   $("#nDisc").textContent = st.counts?.discover || 0;
+  $("#nDetached").textContent = st.counts?.detached || 0;
   // 待办与体检的四个计数：后端一次算好，前端只负责摆，别各算一套
   const c = st.counts || {};
   for (const [sel, num] of [["#nToread", "#fToread"], ["#nStale", "#fStale"], ["#nDropped", "#fDropped"]]) {
@@ -194,6 +195,7 @@ function cardHTML(r, ctx = "repo") {
       ${hidden ? '<span class="badge arch">隐藏</span>' : ""}
       ${r.toread ? '<span class="badge todo">待读</span>' : ""}
       ${r.dropped ? '<span class="badge arch">已放弃</span>' : ""}
+      ${r.detached ? '<span class="badge arch" title="同步时上游已无此仓库（取消 star / 仓库被删）">已取消</span>' : ""}
       ${r.fork_behind > 0 ? `<span class="badge warn" title="上游有 ${r.fork_behind} 个提交没合进来">落后 ${r.fork_behind}</span>` : ""}
     </div>
     ${head ? `<div class="digest">${esc(head)}${tail ? `<span class="stat">${esc(tail)}</span>` : ""}</div>`
@@ -222,6 +224,8 @@ function cardHTML(r, ctx = "repo") {
 function emptyText() {
   const n = state.status?.counts || {};
   if (state.filter === "toread") return "待读队列是空的。在仓库详情里点「加入待读」，这里就会有它。";
+  if (n.detached === 0 && state.scope === "detached")
+    return "没有已取消的仓库。你在 GitHub 上取消 star、或上游删了仓库，同步后它们会出现在这里。";
   if (state.filter === "dropped") return "还没有放弃过的仓库。详情里点「放弃」表示不再关注，它不会删掉 star。";
   if (state.filter === "stale") return "没有半年没推送的仓库，挺健康。";
   if (state.q) return `没有匹配「${state.q}」的仓库。换个关键词，或清空搜索。`;
@@ -236,6 +240,7 @@ async function loadRepos() {
   const q = new URLSearchParams({ q: state.q, source: state.scope, tag: state.tag, lang: state.lang, sort: state.sort });
   if (state.scope === "hidden") q.set("source", "hidden");
   if (state.scope === "discover") q.set("source", "discover");
+  if (state.scope === "detached") q.set("source", "detached");
   // 待读 / 停滞 / 已放弃：走服务端的 view 过滤，不在这儿再筛一遍
   if (state.filter) q.set("view", state.filter);
   const d = await api("/api/repos?" + q.toString());
@@ -245,6 +250,8 @@ async function loadRepos() {
   empty.hidden = state.items.length > 0;
   if (!empty.hidden) empty.textContent = emptyText();
   const bits = [`<b>${state.items.length}</b> 个仓库`];
+  const SCOPE_LABEL = { detached: "已取消" };
+  if (SCOPE_LABEL[state.scope]) bits.push(`<b>${SCOPE_LABEL[state.scope]}</b>（上游已无，同步后仍找得到）`);
   const FILTER_LABEL = { toread: "待读队列", stale: "停滞超半年", dropped: "已放弃" };
   if (state.filter) bits.push(`视图 <b>${FILTER_LABEL[state.filter] || state.filter}</b>`);
   if (state.tag) bits.push(`标签 <b>${esc(state.tag)}</b>`);
