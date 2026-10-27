@@ -61,7 +61,37 @@ const state = {
   items: [],
   tags: [],
   status: null,
+  // 标签 / 语言是否展开。默认折叠——标签会随同步越攒越多，
+  // 全铺开会把同步按钮和用户信息挤出侧栏。选择记在 localStorage。
+  openTags: localStorage.getItem("radar-open-tags") === "1",
+  openLangs: localStorage.getItem("radar-open-langs") === "1",
 };
+
+/* 标签 / 语言的小折叠。判据不是「条数超过几个」，而是「实际高度超过三行」——
+   中英文标签宽度差一倍，按条数截会让中文早早截断、英文迟迟不截。
+   只有真的溢出时才显示按钮，不溢出的区块不留一条空按钮。 */
+const CLAMP_MAX = 96;   // 约三行 chip（高 26 + 间距 5）
+function applyClamp(listSel, btnSel, open, label) {
+  const list = $(listSel);
+  const btn = $(btnSel);
+  if (!list || !btn) return;
+  const need = list.scrollHeight > CLAMP_MAX + 8;
+  list.classList.toggle("clamped", need && !open);
+  btn.hidden = !need;
+  if (!need) return;
+  const total = list.querySelectorAll(".chip").length;
+  btn.classList.toggle("open", open);
+  btn.textContent = open ? `收起${label}` : `展开全部 ${total} 个${label}`;
+  // 别报「还有 N 个没显示」：折叠是靠 max-height 裁的，DOM 里没有 hidden 标记，
+  // 数不出被裁掉几个，硬算只会给个错数字。
+  btn.title = open ? `折叠${label}` : `共 ${total} 个${label}，点开看全`;
+}
+// 折叠时把选中的那个提到最前，否则用户以为筛选没生效。
+// 标签和语言都走这里：后端按热度/inclusion 排序，选中的多半排在很后面。
+function activeFirst(rows, key, name, open) {
+  if (open) return rows;
+  return [...rows.filter((r) => r[key] === name), ...rows.filter((r) => r[key] !== name)];
+}
 
 /* ---------------- 侧栏渲染 */
 function renderSide() {
@@ -83,19 +113,25 @@ function renderSide() {
   const maxN = Math.max(1, ...tags.map((t) => t.n));
   // 两级标签：后端已按「父在前、子紧随」排好序，这里只加缩进。
   // 子标签的 n 是它自己挂的仓库数，不含父标签的——点父标签时后端会把子标签一起算进去。
-  $("#tagList").innerHTML = tags
-    .filter((t) => t.n > 0)
+  // 折叠时当前选中的那个必须露头（它多半排在很后面），放到最前。
+  const tagRows = activeFirst(tags.filter((t) => t.n > 0), "name", state.tag, state.openTags);
+  $("#tagList").innerHTML = tagRows
     .map((t) => {
       const child = t.parent ? " chip-sub" : "";
       const title = t.parent ? ` title="属于「${esc(t.parent)}」"` : "";
-      return `<button class="chip${child} ${state.tag === t.name ? "active" : ""}" data-tag="${esc(t.name)}"${title}
+      const on = t.name === state.tag ? " active" : "";
+      return `<button class="chip${child}${on}" data-tag="${esc(t.name)}"${title}
         ${t.color ? `data-color="${esc(t.color)}"` : ""}>${esc(t.name)}<b>${t.n}</b></button>`;
     })
     .join("") || `<span class="minihint">同步后自动归类</span>`;
-  $("#langList").innerHTML = (st.langs || [])
-    .slice(0, 14)
+  // 语言不再在渲染时截掉尾巴：先全摆出来，由下方 applyClamp 决定露多少。
+  // 原来固定 slice(0,14)，第 15 种语言永远点不到。
+  const langRows = activeFirst(st.langs || [], "language", state.lang, state.openLangs);
+  $("#langList").innerHTML = langRows
     .map((l) => `<button class="chip ${state.lang === l.language ? "active" : ""}" data-lang="${esc(l.language)}">${esc(l.language)}<b>${l.n}</b></button>`)
     .join("");
+  applyClamp("#tagList", "#tagMore", state.openTags, "标签");
+  applyClamp("#langList", "#langMore", state.openLangs, "语言");
   const sync = st.sync || {};
   $("#syncBtn").disabled = !!sync.running;
   if (sync.running && sync.retry_at) {
@@ -721,6 +757,17 @@ $("#staleForkGo").addEventListener("click", async () => {
   }
 });
 $("#expBtn").addEventListener("click", () => window.open("/api/export", "_blank"));
+$("#tagMore").addEventListener("click", () => {
+  state.openTags = !state.openTags;
+  localStorage.setItem("radar-open-tags", state.openTags ? "1" : "0");
+  // 重新渲染而不是只切 class：折叠时要把选中的标签提到最前，纯 class 做不到
+  renderSide();
+});
+$("#langMore").addEventListener("click", () => {
+  state.openLangs = !state.openLangs;
+  localStorage.setItem("radar-open-langs", state.openLangs ? "1" : "0");
+  applyClamp("#langList", "#langMore", state.openLangs, "语言");
+});
 $("#newTagBtn").addEventListener("click", async () => {
   const name = prompt("新建标签名（之后可在详情里把它挂到任意仓库）");
   if (!name || !name.trim()) return;
@@ -824,4 +871,14 @@ if (logoutBtn) {
     return;
   }
   listenEvents();
+  // 窗口缩放会改变 chip 的换行数，「要不要折叠」得重算。
+  // 防抖 150ms：拖窗口时 resize 会连发几十次，每次都读 scrollHeight 会卡。
+  let rzTimer = 0;
+  addEventListener("resize", () => {
+    clearTimeout(rzTimer);
+    rzTimer = setTimeout(() => {
+      applyClamp("#tagList", "#tagMore", state.openTags, "标签");
+      applyClamp("#langList", "#langMore", state.openLangs, "语言");
+    }, 150);
+  });
 })();
