@@ -235,7 +235,7 @@ async function openRepo(id) {
     const md = await api(`/api/repo/${id}/readme`);
     // 期间用户可能已切到别的仓库或关掉抽屉，迟到的响应不能覆盖当前面板
     if (mySeq !== drawerSeq || $("#drawer").hidden) return;
-    $("#readmeBox").innerHTML = md.markdown ? miniMarkdown(md.markdown) : "（该仓库没有 README，或已超出 200KB 截断）";
+    $("#readmeBox").innerHTML = md.markdown ? miniMarkdown(md.markdown, r.full_name) : "（该仓库没有 README，或已超出 200KB 截断）";
   } catch (e) {
     if (mySeq !== drawerSeq || $("#drawer").hidden) return;
     $("#readmeBox").textContent = "README 读取失败：" + e.message;
@@ -281,25 +281,219 @@ function rulePreview(r, topics) {
   return `${head}\n${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${(r.pushed_at || "").slice(0, 10)}`;
 }
 
-/* 极简 markdown：标题/列表/代码/链接/粗体，够看 README 用途 */
-function miniMarkdown(md) {
-  let s = esc(md.slice(0, 120000));
-  s = s.replace(/<img[^>]*src="([^"]+)"[^>]*>/g, (_, src) => `<img src="${src}" loading="lazy">`);
-  s = s.replace(/!\[[^\]]*\]\(([^)\s]+)[^)]*\)/g, (_, src) => `<img src="${src}" loading="lazy">`);
-  s = s.replace(/```([\s\S]*?)```/g, (_, c) => `<pre>${c.replace(/^\w*\n/, "")}</pre>`);
-  s = s.replace(/^###### (.*)$/gm, "<h6>$1</h6>").replace(/^##### (.*)$/gm, "<h5>$1</h5>")
-       .replace(/^#### (.*)$/gm, "<h4>$1</h4>").replace(/^### (.*)$/gm, "<h3>$1</h3>")
-       .replace(/^## (.*)$/gm, "<h2>$1</h2>").replace(/^# (.*)$/gm, "<h1>$1</h1>");
-  s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  // 相对锚点链接 [#anchor] 与 [!badge] 之类图标语法：渲染成可点文本，避免裸露方括号
-  s = s.replace(/\[([^\]]+)\]\(#([^)]*)\)/g, '<a class="mdlink" href="#$2">$1</a>');
-  s = s.replace(/\[!\[[^\]]*\]\([^)]*\)\]\(([^)]+)\)/g, (m, u) =>
-    safeUrl(u) ? `<a class="mdlink" href="${esc(safeUrl(u))}" target="_blank" rel="noreferrer">查看</a>` : "查看");
-  s = s.replace(/\[([^\]]{1,60})\]/g, (m, t) => (t.startsWith("!") ? m : `<span class="mdlink">${t}</span>`));
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
-  s = s.replace(/^[-*+] (.*)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
-  s = s.replace(/^(?!<h|<ul|<li|<pre|<img|<p)(.+)$/gm, "<p>$1</p>");
-  return s;
+/* 极简 markdown 渲染器。
+   旧实现先把整篇文档 HTML 转义、再试图替换 <img>，转义已经把 < 变成 &lt;，
+   于是 README 里的 HTML（<div align="center">、<p>、<a href>、<strong>）
+   全部原样显示成文本——GitHub 上的 README 几乎都带 HTML，等于全废。
+   现在改为：钉住 fenced code → 保护行内 code → 逐行块级解析（标题/列表/引用/表格/HTML 块）
+   → 行内解析（图片/链接/加粗/斜体/删除线）→ 白名单放行安全的 HTML 标签。 */
+
+// README 来自外部仓库，放行的 HTML 标签与属性都做白名单，
+// 事件处理器、style、iframe/script 一律丢弃。
+const MD_VOID = new Set(["img", "br", "hr", "input", "source", "wbr", "col"]);
+const MD_BLOCK = new Set([
+  "div", "p", "center", "details", "summary", "table", "thead", "tbody", "tr", "td", "th",
+  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code",
+  "a", "b", "i", "strong", "em", "del", "s", "u", "sub", "sup", "small", "br", "hr",
+  "img", "picture", "figure", "figcaption", "kbd", "mark", "span", "section", "article",
+]);
+const MD_ATTR = {
+  a: ["href", "title"],
+  img: ["src", "alt", "title", "width", "height"],
+  td: ["colspan", "rowspan"], th: ["colspan", "rowspan"],
+  div: ["align"], p: ["align"], h1: ["align"], h2: ["align"], h3: ["align"],
+  center: ["align"], table: ["align"], span: ["title"],
+};
+// 标签内属性：只留白名单，href/src 再过 safeUrl
+function mdAttrs(tag, raw, base) {
+  const allow = MD_ATTR[tag] || [];
+  const out = [];
+  const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
+  let m;
+  while ((m = re.exec(raw))) {
+    const name = m[1].toLowerCase();
+    if (!allow.includes(name)) continue;                 // 事件处理器/ style / class 都在这里被丢
+    let val = m[3] ?? m[4] ?? m[5] ?? "";
+    if (name === "href") {
+      // 只放行真能跳转的：绝对 http(s) 与页内锚点。
+      // ./README.zh_CN.md 这类相对链接指向仓库里的另一个文件，本地看板没有它，
+      // 留着 href 点下去只会得到 404 页面，不如当普通文字。
+      if (!/^https?:\/\//i.test(val) && !val.startsWith("#")) continue;
+    }
+    if (name === "src") {
+      if (/^https?:\/\//i.test(val) || /^data:image\//i.test(val)) { /* 原样放行 */ }
+      else if (base) {
+        // 仓库相对图片（./docs/a.png、/web/logo.png）：改写成 CDN 地址。
+        // 实测本机到 raw.githubusercontent.com / media.githubusercontent.com 抖动极大
+        // （15s 超时约 2/3 失败），jsdelivr 的 gh 通道同样走 @HEAD 指向默认分支，
+        // 实测 0.5-2s 稳定返回。
+        val = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${val.replace(/^\.?\//, "")}`;
+      } else {
+        continue; // 没有 base 就丢弃，避免破图标
+      }
+    }
+    out.push(`${name}="${esc(val)}"`);
+  }
+  return out.length ? " " + out.join(" ") : "";
+}
+
+function miniMarkdown(md, base) {
+  // base = "owner/repo"（来自仓库 html_url），相对图片会拼成 raw 地址；不传则丢相对图
+  let src = String(md || "").slice(0, 200000);
+  const stash = [];
+  const save = (html) => `\u0000${stash.push(html) - 1}\u0000`;
+
+  // 1) fenced code 先钉住，避免内部被当成 markdown
+  src = src.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_, _lang, code) =>
+    save(`<pre><code>${esc(code.replace(/\s+$/, ""))}</code></pre>`)
+  );
+  // 2) 行内 code 也钉住
+  src = src.replace(/`([^`\n]+)`/g, (_, c) => save(`<code>${esc(c)}</code>`));
+
+  // 2.5) HTML 注释整段丢掉。徽章区常写成 `</a><!--\n  --><a ...>` 用来消除行内空隙，
+  //      不剔除就会被转义成 &lt;!-- 显示在页面上。放在 code 占位之后，代码块里的
+  //      <!-- 示例不会被误删。
+  src = src.replace(/<!--[\s\S]*?-->/g, "");
+
+  // 3) 行内解析：白名单 HTML 先标记，避免被下面当普通文本转义两次
+  const inline = (text) => {
+    const held = [];
+    const hold = (html) => `\u0001${held.push(html) - 1}\u0001`;
+    let t = text;
+    // 放行/清洗 HTML 标签
+    t = t.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g, (full, nameRaw, attrs) => {
+      const tag = nameRaw.toLowerCase();
+      if (!MD_BLOCK.has(tag)) return esc(full);
+      const close = full.startsWith("</");
+      if (close) return MD_VOID.has(tag) ? "" : hold(`</${tag}>`);
+      const selfClose = full.endsWith("/>") || MD_VOID.has(tag);
+      const a = mdAttrs(tag, attrs || "", base);
+      // 相对链接的 href 已被 mdAttrs 丢掉，此时 <a> 没有跳转能力，
+      // 再挂 target/rel 只是噪音（空 href 的锚点在浏览器里等同纯文本）
+      const linkExtras = tag === "a" && /\shref="/.test(a) ? ' target="_blank" rel="noreferrer"' : "";
+      const loading = tag === "img" ? ' loading="lazy"' : "";
+      // 相对路径的图片在本地没有 base，src 被 mdAttrs 丢掉后 <img> 只剩一个破图标
+      if (tag === "img" && !/\ssrc=/.test(a)) return "";
+      return hold(`<${tag}${a}${loading}${linkExtras}${selfClose ? (MD_VOID.has(tag) ? ">" : " />") : ">"}`);
+    });
+    // 其余内容一律转义；已在上一步转义过的 & 不再二次转义
+    t = t.replace(/&(?![a-zA-Z#][a-zA-Z0-9]*;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    // 图片（相对路径在本地看板不可用，丢弃）
+    // URL 里允许一层括号，否则 alert(1) 这类内容会把 ) 留在外面
+    const URL_RE = "([^()\\s]*(?:\\([^()\\s]*\\)[^()\\s]*)*)";
+    t = t.replace(new RegExp("!\\[([^\\]]*)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, alt, src2) => {
+      if (!/^https?:\/\//i.test(src2) && !/^data:image\//i.test(src2)) {
+        if (!base) return "";
+        src2 = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${src2.replace(/^\.?\//, "")}`;
+      }
+      return `<img src="${esc(src2)}" alt="${alt}" loading="lazy">`;
+    });
+    // 链接：http(s) 与锚点，其余只留文字
+    t = t.replace(new RegExp("\\[([^\\]]+)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, label, href) => {
+      if (/^https?:\/\//i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noreferrer">${label}</a>`;
+      if (href.startsWith("#")) return `<a class="mdlink" href="${esc(href)}">${label}</a>`;
+      return label;
+    });
+    t = t.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>');
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/__([^_]+)__/g, "<b>$1</b>");
+    t = t.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<i>$2</i>");
+    t = t.replace(/~~([^~]+)~~/g, "<del>$1</del>");
+    t = t.replace(/ {2,}$/gm, "<br>");
+    return t.replace(/\u0001(\d+)\u0001/g, (_, i) => held[Number(i)]);
+  };
+
+  // 4) 逐行块级解析
+  const lines = src.split("\n");
+  const out = [];
+  let list = null; // "ul" | "ol"
+  let inHtmlBlock = 0;
+  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const t = line.trim();
+
+    // 钉住的整块内容直接输出
+    if (/^\u0000\d+\u0000$/.test(t)) { closeList(); out.push(t); continue; }
+
+    // HTML 块：<div ...> / </div> 这类独占一行且成对出现的容器
+    const htmlOpen = t.match(/^<([a-zA-Z][\w-]*)(\s[^>]*)?>$/);
+    if (htmlOpen && !MD_VOID.has(htmlOpen[1].toLowerCase())) { inHtmlBlock++; }
+    if (inHtmlBlock > 0) {
+      // GitHub 在 <div align="center"> 里照常渲染 markdown（README 的 # 标题、
+      // 列表都写在容器里），所以块内仍要认标题和列表，纯文本行走行内。
+      const hh = t.match(/^(#{1,6})\s+(.*)$/);
+      if (hh) {
+        out.push(`<h${hh[1].length}>${inline(hh[2])}</h${hh[1].length}>`);
+      } else if (/^[-*+]\s+/.test(t)) {
+        if (list !== "ul") { if (list) out.push(`</${list}>`); out.push("<ul>"); list = "ul"; }
+        out.push(`<li>${inline(t.replace(/^[-*+]\s+/, ""))}</li>`);
+      } else {
+        if (list) { out.push(`</${list}>`); list = null; }
+        out.push(inline(line));
+      }
+      if (/^<\/[a-zA-Z][\w-]*>$/.test(t)) inHtmlBlock--;
+      if (inHtmlBlock === 0) { if (list) { out.push(`</${list}>`); list = null; } out.push("\u0002"); }
+      continue;
+    }
+
+    if (!t) { closeList(); continue; }
+    if (/^<!--/.test(t) || /^-->$/.test(t)) { closeList(); continue; }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { closeList(); out.push("<hr>"); continue; }
+
+    const h = t.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
+
+    const bq = t.match(/^>\s?(.*)$/);
+    if (bq) { closeList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
+
+    const ul = t.match(/^[-*+]\s+(.*)$/);
+    if (ul) {
+      if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; }
+      out.push(`<li>${inline(ul[1])}</li>`);
+      continue;
+    }
+    const ol = t.match(/^\d+[.)]\s+(.*)$/);
+    if (ol) {
+      if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; }
+      out.push(`<li>${inline(ol[1])}</li>`);
+      continue;
+    }
+
+    // 表格：连续的 | a | b | 行
+    if (/^\|.*\|$/.test(t)) {
+      closeList();
+      const rows = [];
+      while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) { rows.push(lines[i].trim()); i++; }
+      i--;
+      if (rows.length >= 2 && /^\|[\s:|-]+\|$/.test(rows[1])) {
+        const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
+        const head = cells(rows[0]);
+        const body = rows.slice(2).map(cells);
+        out.push(
+          "<table><thead><tr>" + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>" +
+          body.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") +
+          "</tbody></table>"
+        );
+      } else {
+        out.push(`<p>${rows.map((r) => inline(r)).join("<br>")}</p>`);
+      }
+      continue;
+    }
+
+    closeList();
+    out.push(`<p>${inline(t)}</p>`);
+  }
+  closeList();
+
+  let html = out.join("\n");
+  // href 被丢掉的 <a> 没有跳转能力，剥成纯内容（<a href=...> 不受影响）
+  html = html.replace(/<a>([\s\S]*?)<\/a>/g, "$1");
+  // 钉住的内容回填
+  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => stash[Number(i)] ?? "");
+  // 行内保留位回填（inline 内部已处理，这里兜一次跨行的）
+  html = html.replace(/\u0001(\d+)\u0001/g, "");
+  return html;
 }
 
 /* ---------------- 发现热门 */
