@@ -122,3 +122,29 @@ describe("similarity / similarTo", () => {
     expect(similarTo(a, [a, { id: 10, language: "Rust", topics: [], tags: [] }], 5)).toHaveLength(0);
   });
 });
+
+  test("tags 是 JSON 字符串时也走归一化（不能只给 topics 做）", () => {
+    // 库里 tags 与 topics 同样是 JSON 字符串。只给 topics 走 asList 的话，
+    // new Set('["a"]') 会按字符集合算 Jaccard，相似度全乱。
+    const a = { topics: '["go","cli"]', tags: '["命令行工具"]' };
+    const b = { topics: '["go","cli"]', tags: '["命令行工具"]' };
+    // similarity 是加权和（不是 0-1），只要「同标签得分严格高于异标签」即可
+    expect(similarity(a, b)).toBeGreaterThan(0);
+    // 不同标签不应被当成完全相同
+    const c = { topics: '["go","cli"]', tags: '["视频处理"]' };
+    expect(similarity(a, c)).toBeLessThan(similarity(a, b));
+  });
+
+  test("forkLag：字段缺失不臆造方向", () => {
+    // behind_by 为 null 时不能被 ?? 0 顶成 0 —— 那会判成「领先上游 3」，
+    // 而上游根本没给这个数，我们不知道它落后多少。
+    expect(forkLag({ behind_by: null, ahead_by: 3 }).status).toBe("unknown");
+    expect(forkLag({ behind_by: 5, ahead_by: null }).status).toBe("unknown");
+    expect(forkLag({ behind_by: 5, ahead_by: 0 }).status).toBe("behind");
+    expect(forkLag({ behind_by: 0, ahead_by: 3 }).status).toBe("ahead");
+  });
+
+  test("similarity：只同语言不该得分", () => {
+    const a = { topics: [], tags: [], language: "Go" };
+    expect(similarity(a, { topics: [], tags: [], language: "Go" })).toBe(0);
+  });

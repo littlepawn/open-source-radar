@@ -162,3 +162,30 @@ describe("autoSyncRuntime", () => {
       .toBe("401 Bad credentials");
   });
 });
+
+  test("nextRunAt 吃 ISO 字符串时间戳（Number() 会静默变 0）", () => {
+    const now = Date.parse("2026-10-27T12:00:00Z");
+    // 库里 last_sync_ok 就是 now() 的 ISO 串。Number("2026-…") 是 NaN，
+    // || 0 之后会当成「从未同步过」而立刻重跑。
+    const iso = new Date(now - 10 * 60 * 1000).toISOString();
+    expect(nextRunAt(iso, 120, now)).toBeGreaterThan(now);   // 10 分钟前跑过 → 还没到期
+    // 最小间隔 15 分钟（未认证配额 60 次/小时），写 5 会被收敛成 15。
+    // 10 分钟前跑过 + 15 分钟间隔 → 还差 5 分钟，不该立刻跑。
+    expect(nextRunAt(iso, 15, now)).toBeGreaterThan(now);
+    // 30 分钟前跑过 + 15 分钟间隔 → 早过期了，应当立刻补一次
+    const old30 = new Date(now - 30 * 60 * 1000).toISOString();
+    expect(nextRunAt(old30, 15, now)).toBe(now);
+  });
+
+  test("未来的时间戳按现在跑，不把定时器推爆", () => {
+    const now = Date.parse("2026-10-27T12:00:00Z");
+    // 时钟回拨 / 脏数据：setTimeout 拿到超大延迟会被钳成 1ms，反而疯狂打 GitHub
+    expect(nextRunAt(now + 10 * 864e5, 120, now)).toBe(now);
+  });
+
+  test("clampInt 之外：nextRunAt 对脏输入一律立刻跑", () => {
+    const now = Date.parse("2026-10-27T12:00:00Z");
+    for (const bad of [null, undefined, "", "abc", NaN, {}]) {
+      expect(nextRunAt(bad, 120, now)).toBe(now);
+    }
+  });

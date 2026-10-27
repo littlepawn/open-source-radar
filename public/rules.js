@@ -7,7 +7,7 @@
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const RAW = [
   [
-    "ppt|slide|presentation|keynote|powerpoint",
+    "ppt|\\bslides?\\b|slide[- _]?show|presentation|keynote|powerpoint|\\u5E7B\\u706F\\u7247",
     "做 PPT / 演示文稿（AI 直接把文档或主题生成可编辑的演示稿）",
     "文档办公"
   ],
@@ -47,7 +47,12 @@
     "AI 绘图"
   ],
   [
-    "\\btts\\b|\\bvoice\\b|speech|whisper|\\baudio\\b|\\basr\\b|\\bmusic\\b|\\bsing\\b|sing-box",
+    "sing-?box",
+    "通用代理内核 / 多协议翻墙客户端",
+    "网络代理"
+  ],
+  [
+    "\\btts\\b|\\bvoice\\b|speech|whisper|\\baudio\\b|\\basr\\b|\\bmusic\\b|\\bsing(ing|er)?\\b(?!-?box)",
     "语音合成 / 语音识别 / 音频处理",
     "音频语音"
   ],
@@ -62,7 +67,7 @@
     "容器 / 运维"
   ],
   [
-    "nginx|proxy|reverse|tunnel|frp|wireguard|vpn|clash|sing-?box|v2ray|xray",
+    "nginx|\\bproxy\\b|reverse[- _]?proxy|tunnel|frp|wireguard|vpn|clash|sing-?box|v2ray|xray",
     "网络代理 / 内网穿透 / 反向代理",
     "网络代理"
   ],
@@ -72,7 +77,7 @@
     "监控运维"
   ],
   [
-    "\\bnas\\b|home[- ]?assistant|homelab|self[- ]?host|dashboard|unraid",
+    "\\bnas\\b|home[- ]?assistant|homelab|self[- ]?host|unraid|dashboard(?=.*(nas|homelab|self[- ]?host|server))",
     "自托管 / 家庭服务器 / NAS 面板类工具",
     "自托管"
   ],
@@ -142,7 +147,7 @@
     "安全攻防"
   ],
   [
-    "game|emulator|retro|steam|\\u6E38\\u620F",
+    "\\bgames?\\b|emulator|retro[- _]?(game|arch|console|computing)|\\bretro\\b(?=.*(game|emulat|console|\\u590D\\u53E4))|steam|\\u6E38\\u620F",
     "游戏相关工具 / 模拟器 / 游戏资源",
     "游戏"
   ],
@@ -157,7 +162,7 @@
     "翻译"
   ],
   [
-    "\\bpdf\\b|\\bocr\\b|\\bscan(n(ing|er))?\\b|\\u6587\\u5B57\\u8BC6\\u522B|\\u8BC6\\u522B\\u6587\\u5B57",
+    "\\bocr\\b|\\bscan(n(ing|er))?\\b|\\u6587\\u5B57\\u8BC6\\u522B|\\u8BC6\\u522B\\u6587\\u5B57",
     "OCR 文字识别与扫描件解析",
     "OCR"
   ],
@@ -167,7 +172,19 @@
     "中转转发"
   ]
 ];
-  const RULES = RAW.map(([src, phrase, tag]) => [new RegExp(src, "i"), phrase, tag]);
+  // 一条正则写坏不能让整个文件挂掉（否则页面连标签都渲染不出来）。
+  // 坏规则跳过后 RAW 与 RULES 长度不一致，下面 ruleDigest 会用 RAW 之外的 RULES，
+  // 所以同时把坏的从 RAW 里剔掉，保证两边对齐。
+  const RULES = [];
+  const OK = [];
+  for (const [src, phrase, tag] of RAW) {
+    try { RULES.push([new RegExp(src, "i"), phrase, tag]); OK.push([src, phrase, tag]); }
+    catch (e) {
+      if (typeof console !== "undefined") console.warn("规则正则无效，已跳过：", src, e.message);
+    }
+  }
+  RAW.length = 0;
+  RAW.push(...OK);
 
   // ↓↓↓ 以下 fmt / ruleDigest 由本脚本从 lib/rules.mjs 原样嵌入 ↓↓↓
 /** 数字缩写：1200 → 1.2k，18500 → 19k（与前端 app.js 的 fmt 语义一致） */
@@ -200,20 +217,31 @@ function ruleDigest(r) {
   const sentences = hits.slice(0, 2).map((h) => h.sentence);
   const zh = (r.description || "").trim();
   const hasCJK = /[\u4e00-\u9fa5]/.test(zh);
-  const head = sentences.length
-    ? (hasCJK ? `【${tagSet.join(" / ")}】${zh.slice(0, 130)}` : sentences.join("；") + "。")
-    : zh
-      ? "用途：" + zh.slice(0, 120) + (zh.length > 120 ? "…" : "")
-      : "暂无描述，点开右侧 README 看原文。";
-  const tail = `${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${(r.pushed_at || "").slice(0, 10)}`;
+  // pushed_at 可能是 number / Date（上游未归一化或测试直接传时间戳），
+  // 直接 .slice 会抛 —— 统一先转成字符串再截。
+  const pushed = (() => {
+    const v = r.pushed_at;
+    if (!v) return "";
+    if (typeof v === "string") return v.slice(0, 10);
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? String(v).slice(0, 10) : d.toISOString().slice(0, 10);
+  })();
+  let head;
+  if (!sentences.length) head = zh;
+  else if (hasCJK) head = `【${tagSet.join(" / ")}】${zh.slice(0, 130)}`;
+  else head = sentences.join("；") + "。";
+  if (!head) head = zh ? "用途：" + zh.slice(0, 120) + (zh.length > 120 ? "…" : "") : "暂无描述，点开右侧 README 看原文。";
+  const tail = `${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${pushed}`;
   return { digest: `${head}\n${tail}`, tags: tagSet };
 }
 
   // ↑↑↑ 与服务端落库用的是同一份实现，预览与保存后必然一致 ↑↑↑
 
   // 「用规则重算」只需要简介那一段（drawer 的 textarea），标签另有一套 UI
-  function rulePreview(r, topics = []) {
-    return ruleDigest({ ...r, topics }).digest;
+  function rulePreview(r, topics) {
+    // 不能写 topics = []：调用方省略第二个参数时，它会覆盖 r.topics，
+    // 「用规则重算」会丢掉服务端库里那份 topics 命中。
+    return ruleDigest({ ...r, ...(topics ? { topics } : null) }).digest;
   }
 
   return { RULES, RAW, fmt, ruleDigest, rulePreview };

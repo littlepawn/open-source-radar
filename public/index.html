@@ -25,21 +25,21 @@
     <div class="sideblock navblock first">
       <div class="sidehead">库</div>
       <nav class="nav" aria-label="库">
-        <button class="navitem active" data-scope="all"><i>▦</i>全部 <em id="nAll">0</em></button>
-        <button class="navitem" data-scope="starred"><i>★</i>我 Star 的 <em id="nStar">0</em></button>
-        <button class="navitem" data-scope="fork"><i>⑂</i>我的 Fork <em id="nFork">0</em></button>
-        <button class="navitem" data-scope="hidden"><i>◌</i>已隐藏 <em id="nHide">0</em></button>
-        <button class="navitem" data-scope="discover"><i>✦</i>发现过的 <em id="nDisc">0</em></button>
-        <button class="navitem" data-scope="detached"><i>⊘</i>已取消 <em id="nDetached">0</em></button>
+        <button type="button" class="navitem active" data-scope="all"><i>▦</i>全部 <em id="nAll">0</em></button>
+        <button type="button" class="navitem" data-scope="starred"><i>★</i>我 Star 的 <em id="nStar">0</em></button>
+        <button type="button" class="navitem" data-scope="fork"><i>⑂</i>我的 Fork <em id="nFork">0</em></button>
+        <button type="button" class="navitem" data-scope="hidden"><i>◌</i>已隐藏 <em id="nHide">0</em></button>
+        <button type="button" class="navitem" data-scope="discover"><i>✦</i>发现过的 <em id="nDisc">0</em></button>
+        <button type="button" class="navitem" data-scope="detached"><i>⊘</i>已取消 <em id="nDetached">0</em></button>
       </nav>
     </div>
 
     <div class="sideblock navblock">
       <div class="sidehead">工具</div>
       <nav class="nav" aria-label="工具页">
-        <button class="navitem" data-view="discover"><i>✦</i>发现热门</button>
-        <button class="navitem" data-view="releases"><i>⬆</i>新版本</button>
-        <button class="navitem" data-view="cleanup"><i>♻</i>清理建议</button>
+        <button type="button" class="navitem" data-view="discover"><i>✦</i>发现热门</button>
+        <button type="button" class="navitem" data-view="releases"><i>⬆</i>新版本</button>
+        <button type="button" class="navitem" data-view="cleanup"><i>♻</i>清理建议</button>
       </nav>
     </div>
 
@@ -48,9 +48,9 @@
       <div class="taglist">
         <!-- 这三个是「列表过滤器」（data-filter），不是独立面板（data-view）：
              它们复用主列表 #viewRepos，只是把服务端的 view 参数换掉。 -->
-        <button class="navitem slim" id="fToread" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
-        <button class="navitem slim" id="fStale" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
-        <button class="navitem slim" id="fDropped" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
+        <button type="button" class="navitem slim" id="fToread" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
+        <button type="button" class="navitem slim" id="fStale" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
+        <button type="button" class="navitem slim" id="fDropped" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
       </div>
     </div>
 
@@ -70,16 +70,16 @@
     </div><!-- /sidebody -->
 
     <div class="sidefoot">
-      <button id="syncBtn" class="primary">同步 GitHub</button>
+      <button type="button" id="syncBtn" class="primary">同步 GitHub</button>
       <div class="footrow">
-        <button id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
-        <button id="setBtn" class="ghost" data-view="settings" title="设置：AI 接入等">⚙ 设置</button>
+        <button type="button" id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
+        <button type="button" id="setBtn" class="ghost" data-view="settings" title="设置：AI 接入等">⚙ 设置</button>
       </div>
       <div class="minihint" id="syncHint">未同步</div>
       <div class="userbox" id="userbox" hidden>
         <img id="userAvatar" alt="" />
         <span id="userLogin"></span>
-        <button class="out" id="logoutBtn">退出</button>
+        <button type="button" class="out" id="logoutBtn">退出</button>
       </div>
     </div>
   </aside>
@@ -93,14 +93,14 @@
         <option value="starred">按收藏时间</option>
         <option value="name">按名称</option>
       </select>
-      <button id="resetFilters" class="ghost" title="清除筛选">重置筛选</button>
+      <button type="button" id="resetFilters" class="ghost" title="清除筛选">重置筛选</button>
     </header>
 
     <div id="viewRepos">
       <!-- 停滞视图复用主列表，只多这一条工具行。data-filter="stale" 时显示。 -->
       <div class="discoverbar" id="staleBar" hidden>
         <span class="minihint">半年没推送、也没归档标记的库。看是否还值得留在收藏里。</span>
-        <button id="staleForkGo" class="ghost" title="逐个数一下 fork 落后上游多少提交">检查 Fork 落后</button>
+        <button type="button" id="staleForkGo" class="ghost" title="逐个数一下 fork 落后上游多少提交">检查 Fork 落后</button>
         <span class="minihint" id="staleHint"></span>
       </div>
       <div class="crumb" id="crumb"></div>
@@ -124,15 +124,15 @@
           <span>天新建</span>
         </label>
         <input id="dQ" placeholder="自定义搜索语法，如 topic:homelab stars:&gt;1000（留空用上面的条件）" />
-        <button id="dGo" class="primary">搜索</button>
-        <button id="dReset" class="ghost" title="恢复默认阈值">恢复默认</button>
+        <button type="button" id="dGo" class="primary">搜索</button>
+        <button type="button" id="dReset" class="ghost" title="恢复默认阈值">恢复默认</button>
       </div>
       <div id="dResult" class="cards"></div>
     </div>
 
     <div id="viewReleases" hidden>
       <div class="discoverbar">
-        <button id="relGo" class="primary">检查前 25 个项目的更新</button>
+        <button type="button" id="relGo" class="primary">检查前 25 个项目的更新</button>
         <span class="minihint" id="relHint"></span>
       </div>
       <div id="relList" class="cards"></div>
@@ -144,7 +144,7 @@
           <strong>清理建议</strong>
           <span>同时命中两条以上信号的仓库会列在这里：上游长期没推送、收藏后从未打开、已归档、已标记放弃。</span>
         </div>
-        <button id="cleanupGo" class="ghost">重新扫描</button>
+        <button type="button" id="cleanupGo" class="ghost">重新扫描</button>
       </div>
       <div class="cleanup-hint" id="cleanupHint"></div>
       <div class="minihint cleanup-note">
@@ -186,8 +186,8 @@
             </div>
           </div>
           <div class="btnrow">
-            <button id="aiSave" class="primary">保存 AI 配置</button>
-            <button id="aiTest" class="ghost">测试连通</button>
+            <button type="button" id="aiSave" class="primary">保存 AI 配置</button>
+            <button type="button" id="aiTest" class="ghost">测试连通</button>
             <span class="minihint" id="aiHint"></span>
           </div>
           <div class="minihint">
@@ -217,7 +217,7 @@
             </div>
           </div>
           <div class="btnrow">
-            <button id="asSave" class="primary">保存</button>
+            <button type="button" id="asSave" class="primary">保存</button>
             <span class="minihint" id="asHint"></span>
           </div>
           <div class="minihint" id="asNext"></div>

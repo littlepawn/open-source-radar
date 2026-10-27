@@ -3,8 +3,19 @@
    这个文件挂了也不影响主界面（CSP 下 script-src 'self'，不能内联）。 */
 (() => {
   const $ = (s) => document.querySelector(s);
-  const api = async (p, opt) => {
-    const r = await fetch(p, opt);
+  // 本页三个请求都会打到上游 AI（test/chat 最长 120s，拉模型列表也要几秒）。
+  // 不设超时的话网络挂住时 UI 会永远停在「测试中…」，只能刷新页面。
+  const api = async (p, opt = {}) => {
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 130000);   // 略大于服务端 120s
+    let r;
+    try {
+      r = await fetch(p, { ...opt, signal: ac.signal });
+    } catch (e) {
+      clearTimeout(timer);
+      throw new Error(ac.signal.aborted ? "请求超时（超过 130 秒），请检查上游是否可达" : e.message);
+    }
+    clearTimeout(timer);
     const t = await r.text();
     let d;
     try { d = JSON.parse(t); } catch { d = t; }
@@ -21,6 +32,7 @@
   // 用户动过的字段。每次进设置页都会 load() 一次，若无条件回填，
   // 用户填一半切走再回来就被冲成已保存的值——和发现页阈值被重置是同一类问题。
   const dirty = new Set();
+  const isDirty = () => dirty.size > 0;
   const TRACKED = ["#aiBase", "#aiModel", "#aiTemp", "#aiMax", "#aiExtra", "#aiKey"];
 
   // 按指纹比对：值没变就不算「用户改过」，避免程序化回填自己把自己标脏。
@@ -72,6 +84,9 @@
           $("#aiModel").value = p.model || "";
           $("#aiHint").textContent = p.note || "";
           updateProviderNote($("#aiBase").value);
+          // 程序化改 value 不会触发 input 事件，watchDirty 收不到 → 用户点了预设
+          // 却没法保存。手动补一次 change，让「保存」按钮亮起来。
+          for (const el of [$("#aiBase"), $("#aiModel")]) el?.dispatchEvent(new Event("change", { bubbles: true }));
         };
         $("#aiBase").oninput = () => {
           const p = presets.find((x) => x.id === sel.value);
@@ -152,6 +167,12 @@
   }
 
   async function test() {
+    // 服务端 /api/ai/test 只读已保存的配置，不看请求体。用户改了 Base URL 没保存就点
+    // 「测试连通」，测的其实是旧值——提示必须说清楚，否则「改了不通 / 改了通了」都对不上。
+    if (isDirty()) {
+      $("#aiHint").textContent = "有未保存的改动，请先点「保存」再测试（测试用的是已保存的配置）";
+      return;
+    }
     $("#aiHint").textContent = "测试中…";
     try {
       const d = await api("/api/ai/test", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });

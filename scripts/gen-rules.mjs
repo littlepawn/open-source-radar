@@ -38,15 +38,29 @@ const js = `/* 由 scripts/gen-rules.mjs 从 lib/rules.mjs 生成，请勿手改
   else root.RadarRules = mod;
 })(typeof globalThis !== "undefined" ? globalThis : this, function () {
   const RAW = ${JSON.stringify(rows, null, 2)};
-  const RULES = RAW.map(([src, phrase, tag]) => [new RegExp(src, "i"), phrase, tag]);
+  // 一条正则写坏不能让整个文件挂掉（否则页面连标签都渲染不出来）。
+  // 坏规则跳过后 RAW 与 RULES 长度不一致，下面 ruleDigest 会用 RAW 之外的 RULES，
+  // 所以同时把坏的从 RAW 里剔掉，保证两边对齐。
+  const RULES = [];
+  const OK = [];
+  for (const [src, phrase, tag] of RAW) {
+    try { RULES.push([new RegExp(src, "i"), phrase, tag]); OK.push([src, phrase, tag]); }
+    catch (e) {
+      if (typeof console !== "undefined") console.warn("规则正则无效，已跳过：", src, e.message);
+    }
+  }
+  RAW.length = 0;
+  RAW.push(...OK);
 
   // ↓↓↓ 以下 fmt / ruleDigest 由本脚本从 lib/rules.mjs 原样嵌入 ↓↓↓
 ${fnBody}
   // ↑↑↑ 与服务端落库用的是同一份实现，预览与保存后必然一致 ↑↑↑
 
   // 「用规则重算」只需要简介那一段（drawer 的 textarea），标签另有一套 UI
-  function rulePreview(r, topics = []) {
-    return ruleDigest({ ...r, topics }).digest;
+  function rulePreview(r, topics) {
+    // 不能写 topics = []：调用方省略第二个参数时，它会覆盖 r.topics，
+    // 「用规则重算」会丢掉服务端库里那份 topics 命中。
+    return ruleDigest({ ...r, ...(topics ? { topics } : null) }).digest;
   }
 
   return { RULES, RAW, fmt, ruleDigest, rulePreview };

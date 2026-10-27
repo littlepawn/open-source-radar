@@ -1,9 +1,9 @@
 {
   "generated_from": "lib/rules.mjs",
-  "count": 32,
+  "count": 33,
   "rules": [
     [
-      "ppt|slide|presentation|keynote|powerpoint",
+      "ppt|\\bslides?\\b|slide[- _]?show|presentation|keynote|powerpoint|\\u5E7B\\u706F\\u7247",
       "做 PPT / 演示文稿（AI 直接把文档或主题生成可编辑的演示稿）",
       "文档办公"
     ],
@@ -43,7 +43,12 @@
       "AI 绘图"
     ],
     [
-      "\\btts\\b|\\bvoice\\b|speech|whisper|\\baudio\\b|\\basr\\b|\\bmusic\\b|\\bsing\\b|sing-box",
+      "sing-?box",
+      "通用代理内核 / 多协议翻墙客户端",
+      "网络代理"
+    ],
+    [
+      "\\btts\\b|\\bvoice\\b|speech|whisper|\\baudio\\b|\\basr\\b|\\bmusic\\b|\\bsing(ing|er)?\\b(?!-?box)",
       "语音合成 / 语音识别 / 音频处理",
       "音频语音"
     ],
@@ -58,7 +63,7 @@
       "容器 / 运维"
     ],
     [
-      "nginx|proxy|reverse|tunnel|frp|wireguard|vpn|clash|sing-?box|v2ray|xray",
+      "nginx|\\bproxy\\b|reverse[- _]?proxy|tunnel|frp|wireguard|vpn|clash|sing-?box|v2ray|xray",
       "网络代理 / 内网穿透 / 反向代理",
       "网络代理"
     ],
@@ -68,7 +73,7 @@
       "监控运维"
     ],
     [
-      "\\bnas\\b|home[- ]?assistant|homelab|self[- ]?host|dashboard|unraid",
+      "\\bnas\\b|home[- ]?assistant|homelab|self[- ]?host|unraid|dashboard(?=.*(nas|homelab|self[- ]?host|server))",
       "自托管 / 家庭服务器 / NAS 面板类工具",
       "自托管"
     ],
@@ -138,7 +143,7 @@
       "安全攻防"
     ],
     [
-      "game|emulator|retro|steam|\\u6E38\\u620F",
+      "\\bgames?\\b|emulator|retro[- _]?(game|arch|console|computing)|\\bretro\\b(?=.*(game|emulat|console|\\u590D\\u53E4))|steam|\\u6E38\\u620F",
       "游戏相关工具 / 模拟器 / 游戏资源",
       "游戏"
     ],
@@ -153,7 +158,7 @@
       "翻译"
     ],
     [
-      "\\bpdf\\b|\\bocr\\b|\\bscan(n(ing|er))?\\b|\\u6587\\u5B57\\u8BC6\\u522B|\\u8BC6\\u522B\\u6587\\u5B57",
+      "\\bocr\\b|\\bscan(n(ing|er))?\\b|\\u6587\\u5B57\\u8BC6\\u522B|\\u8BC6\\u522B\\u6587\\u5B57",
       "OCR 文字识别与扫描件解析",
       "OCR"
     ],
