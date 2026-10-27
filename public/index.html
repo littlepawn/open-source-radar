@@ -164,16 +164,24 @@
           <div class="aiform" id="setAI">
             <label class="frow"><span>启用</span><input id="aiEnabled" type="checkbox" /></label>
             <label class="frow"><span>服务预设</span>
-              <select id="aiPreset"></select>
+              <select id="aiPreset"><option value="">自定义</option></select>
             </label>
             <label class="frow"><span>Base URL</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" /></label>
-            <label class="frow"><span>模型</span><input id="aiModel" placeholder="deepseek-chat" /></label>
+            <div class="frow"><span>模型</span>
+              <input id="aiModel" list="aiModelList" placeholder="deepseek-chat" autocomplete="off" />
+              <datalist id="aiModelList"></datalist>
+              <button id="aiFetchModels" class="ghost mini" type="button" title="用当前 Base URL 与 Key 向上游要模型列表">拉取</button>
+            </div>
             <label class="frow"><span>API Key</span><input id="aiKey" type="password" placeholder="留空表示不修改已保存的 Key" /></label>
             <label class="frow"><span>温度</span><input id="aiTemp" type="number" step="0.1" min="0" max="2" placeholder="0.2" /></label>
             <label class="frow"><span>单次上限 tokens</span><input id="aiMax" type="number" min="200" max="8000" placeholder="2000" /></label>
-            <label class="frow col"><span>额外系统提示（可选）</span>
-              <textarea id="aiExtra" rows="3" placeholder="例如：回答尽量短，先说能不能用在生产环境"></textarea>
-            </label>
+            <div class="frow col">
+              <div class="colhead">
+                <span>额外系统提示（可选）</span>
+                <button id="aiPromptReset" class="linkbtn" type="button">恢复默认分析提示词</button>
+              </div>
+              <textarea id="aiExtra" rows="9" placeholder="留空则不带额外要求"></textarea>
+            </div>
           </div>
           <div class="btnrow">
             <button id="aiSave" class="primary">保存 AI 配置</button>

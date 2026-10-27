@@ -14,15 +14,20 @@
   const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
   let presets = [];
+  let defaultPrompt = "";
 
   async function load() {
     if (!$("#aiBase")) return;
     try {
       const cfg = await api("/api/ai/config");
       presets = cfg.presets || [];
+      defaultPrompt = cfg.default_extra_prompt || "";
       const sel = $("#aiPreset");
-      // 选项只建一次：重复 innerHTML 会把用户当前选中项冲掉
-      if (!sel.options.length) {
+      // 选项只建一次：重复 innerHTML 会把用户当前选中项冲掉。
+      // 判断用「只有占位项」而不是 !options.length——HTML 里已经预置了
+      // <option value="">自定义</option> 兜底，length 永远不是 0，
+      // 之前正是这个条件让预设列表一整个建不出来（下拉空白）。
+      if (sel.options.length <= 1) {
         sel.innerHTML = `<option value="">自定义</option>` +
           presets.map((p) => `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("");
         sel.onchange = () => {
@@ -39,6 +44,12 @@
       }
       $("#aiEnabled").checked = !!cfg.enabled;
       $("#aiBase").value = cfg.base_url || "";
+      // 按已保存的 base_url 反选预设，否则重新进设置页下拉永远显示「自定义」，
+      // 用户看不出当前用的是哪家
+      if (sel.options.length > 1 && !sel.value) {
+        const hit = presets.find((p) => p.base_url && p.base_url === cfg.base_url);
+        sel.value = hit ? hit.id : "";
+      }
       $("#aiModel").value = cfg.model || "";
       $("#aiTemp").value = cfg.temperature ?? 0.2;
       $("#aiMax").value = cfg.max_tokens ?? 2000;
@@ -82,11 +93,44 @@
     }
   }
 
+  // 向上游要模型列表，填进 datalist（可下拉可手输，两边都不耽误）
+  async function fetchModels() {
+    const btn = $("#aiFetchModels");
+    const hint = $("#aiHint");
+    hint.textContent = "正在向上游要模型列表…";
+    btn.disabled = true;
+    try {
+      const d = await api("/api/ai/models", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          base_url: $("#aiBase").value.trim(),
+          api_key: $("#aiKey").value.trim(),
+        }),
+      });
+      $("#aiModelList").innerHTML = d.models.map((m) => `<option value="${esc(m)}"></option>`).join("");
+      hint.textContent = `拉到 ${d.models.length} 个模型，点模型框可选`;
+      // 只有一个候选就没得选，直接填上省一次点击
+      if (d.models.length === 1) $("#aiModel").value = d.models[0];
+    } catch (e) {
+      hint.textContent = "拉取失败：" + e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     const b = $("#aiSave");
     if (b) b.onclick = save;
     const t = $("#aiTest");
     if (t) t.onclick = test;
+    const f = $("#aiFetchModels");
+    if (f) f.onclick = fetchModels;
+    const r = $("#aiPromptReset");
+    if (r) r.onclick = () => {
+      $("#aiExtra").value = defaultPrompt;
+      $("#aiHint").textContent = "已填回默认分析提示词，记得保存";
+    };
   });
   // 打开「AI 设置」视图时要重新读一次（可能被别人改过）
   window.RadarAI = { reload: load };

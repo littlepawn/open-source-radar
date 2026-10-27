@@ -22,7 +22,7 @@ import { join, dirname, extname, normalize as pnorm } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { ruleDigest } from "./lib/rules.mjs";
-import { pickKeyFiles, buildMessages, validateAiConfig, AI_PRESETS } from "./lib/ai.mjs";
+import { pickKeyFiles, buildMessages, validateAiConfig, AI_PRESETS, DEFAULT_EXTRA_PROMPT } from "./lib/ai.mjs";
 import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
 import { DISCOVER_DEFAULTS, DISCOVER_NOTE, buildDiscoverQuery } from "./lib/discover.mjs";
 
@@ -280,7 +280,9 @@ const AI_DEFAULTS = {
   model: "deepseek-chat",
   max_tokens: 2000,
   temperature: 0.2,
-  extra_prompt: "",
+  // 默认就带一套「GitHub 项目分析专家」的方法论，用户不必自己想怎么问。
+  // 存的是默认值本身而不是空串：否则设置页显示空文本框，用户以为没配置。
+  extra_prompt: DEFAULT_EXTRA_PROMPT,
 };
 function getAiConfig() {
   const cfg = { ...AI_DEFAULTS };
@@ -1318,7 +1320,11 @@ const server = Bun.serve({
 
       /* ---- AI 设置 ---- */
       if (p === "/api/ai/config") {
-        if (req.method === "GET") return json({ ...getAiConfig(), presets: AI_PRESETS });
+        // default_extra_prompt 一起下发：「恢复默认」按钮要用它填回文本框，
+        // 这段长文案只该有一份定义（lib/ai.mjs），不能前后端各写一遍。
+        if (req.method === "GET") {
+          return json({ ...getAiConfig(), presets: AI_PRESETS, default_extra_prompt: DEFAULT_EXTRA_PROMPT });
+        }
         if (req.method === "POST") {
           const b = await req.json().catch(() => ({}));
           const cfg = {
@@ -1338,6 +1344,41 @@ const server = Bun.serve({
           if (b.api_key !== undefined) setAiKey(b.api_key);
           log("info", `AI 配置已更新（${cfg.base_url} / ${cfg.model}）`);
           return json({ ok: true, ...getAiConfig() });
+        }
+      }
+      /* 拉上游模型列表：GET /models 是 OpenAI 兼容接口的标配，DeepSeek、Moonshot、
+         智谱、通义、Ollama、绝大多数中转站都支持。返回的 id 直接喂给模型下拉。
+         拿不到就如实报错，前端保持手填——不能让「拉不到」变成「配不了」。 */
+      if (p === "/api/ai/models" && req.method === "POST") {
+        const b = await req.json().catch(() => ({}));
+        const cfg = getAiConfig();
+        // 允许用表单里还没保存的 base_url/key 直接试，省得先存一次
+        const baseUrl = String(b.base_url || cfg.base_url || "").trim().replace(/\/+$/, "");
+        const key = String(b.api_key || "").trim() || aiKey();
+        if (!baseUrl) return json({ error: "先填 Base URL" }, 400);
+        if (!key) return json({ error: "先填 API Key" }, 400);
+        try {
+          const res = await fetch(`${baseUrl}/models`, {
+            headers: { authorization: `Bearer ${key}` },
+            signal: AbortSignal.timeout(15000),
+          });
+          const text = await res.text();
+          if (!res.ok) {
+            let msg = text.slice(0, 300);
+            try { const j = JSON.parse(text); msg = j.error?.message || j.message || msg; } catch {}
+            return json({ error: `上游 ${res.status}：${msg}` }, 502);
+          }
+          const data = JSON.parse(text);
+          // 标准是 {data:[{id}]}；个别中转直接回数组，Ollama 回 {models:[{name}]}
+          const raw = Array.isArray(data) ? data : data.data || data.models || [];
+          const ids = raw
+            .map((m) => m?.id || m?.name || m?.model)
+            .filter((x) => typeof x === "string" && x)
+            .sort();
+          if (!ids.length) return json({ error: "上游没返回任何模型", raw: text.slice(0, 300) }, 502);
+          return json({ ok: true, models: ids });
+        } catch (e) {
+          return json({ error: e.name === "TimeoutError" ? "上游 15 秒没响应" : e.message }, 502);
         }
       }
       if (p === "/api/ai/test" && req.method === "POST") {

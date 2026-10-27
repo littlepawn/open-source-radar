@@ -491,6 +491,21 @@ button.link {
 .frow.col { flex-direction: column; align-items: stretch; gap: 6px; }
 .frow.col > span { text-align: left; }
 .frow > input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+/* 模型行：输入框 + 「拉取」小按钮并排。按钮不能跟着 .frow > input 一起 flex:1
+   拉满，否则一行被它吃掉一半。 */
+.frow > .mini { flex: 0 0 auto; padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+.frow > .mini:disabled { opacity: .5; cursor: progress; }
+.frow .colhead { display: flex; align-items: baseline; gap: 10px; }
+.frow .colhead > span { flex: 0 0 auto; }
+/* 行内文字按钮：不属于 .primary/.ghost 任何一级动作，别给它按钮外观 */
+.linkbtn {
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--accent-2); font: inherit; font-size: 12px;
+  text-decoration: underline; text-underline-offset: 2px;
+}
+.linkbtn:hover { color: var(--text); }
+/* 额外系统提示是方法论级文本，两三行看不见全貌，给高一点 */
+.frow > textarea#aiExtra { min-height: 168px; line-height: 1.55; resize: vertical; }
 .frow input:focus, .frow select:focus, .frow textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
 
 /* 清理建议页的免责说明：不是弹窗，只是一行静态文字 */
