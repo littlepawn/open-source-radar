@@ -163,6 +163,9 @@ button { cursor: pointer; }
 .main { padding: 16px 22px 40px; min-width: 0; }
 .topbar { display: flex; gap: 10px; margin-bottom: 12px; position: sticky; top: 0; z-index: 5;
   background: linear-gradient(var(--bg) 70%, transparent); padding: 4px 0 10px; }
+/* 同 .discoverbar[hidden]：作者写的 display:flex 会盖掉 UA 的 [hidden]{display:none}，
+   非主列表视图靠 hidden 隐藏这条搜索栏时会失效。 */
+.topbar[hidden] { display: none !important; }
 /* ---------------- 表单控件统一规格 ----------------
    全项目输入控件（input / textarea / select）共用这一套尺寸与配色，
    避免各处各写一套 padding/圆角/底色后长得不一样。
@@ -221,6 +224,11 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .desc { color: var(--text-dim); font-size: 12.8px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .digest { font-size: 13px; color: var(--text); white-space: pre-line; }
 .digest .stat { display: block; color: var(--text-faint); font-size: 11.5px; margin-top: 2px; }
+/* 清理候选的命中理由：一条一行，比挤成「上游 X 天没推送 · 收藏 Y 天从未打开」
+   一行长句好扫。颜色取 warn，和「N 条信号」徽标呼应。 */
+.signals { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.signals li { color: var(--text-dim); font-size: 12.4px; }
+.signals li::before { content: "·"; color: var(--warn); margin-right: 6px; }
 .rowtags { display: flex; flex-wrap: wrap; gap: 5px; }
 .rowtags .chip { font-size: 11px; padding: 2px 8px; cursor: pointer; }
 .foot { display: flex; align-items: center; gap: 12px; color: var(--text-faint); font-size: 11.5px; margin-top: auto; }
@@ -487,6 +495,16 @@ button.link {
 
 /* 清理建议页的免责说明：不是弹窗，只是一行静态文字 */
 .safetyline { margin: 0 0 12px; padding: 8px 12px; border-left: 2px solid var(--warn); color: var(--text-faint); }
+
+/* 清理建议页自己的头部：此前复用 .discoverbar，而这页原本没有任何说明，
+   用户看到按钮加计数不知道在算什么东西。现在左边一句「算什么」，右边动作。 */
+.cleanupbar { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 8px; flex-wrap: wrap; }
+.cleanup-lead { flex: 1 1 420px; min-width: 0; font-size: 13px; color: var(--text-dim); line-height: 1.55; }
+.cleanup-lead strong { display: block; color: var(--text); font-size: 15px; font-weight: 600; margin-bottom: 3px; }
+.cleanupbar .primary, .cleanupbar .ghost { flex: 0 0 auto; margin-top: 2px; }
+.cleanup-hint { font-size: 12.5px; color: var(--text-faint); margin-bottom: 10px; }
+.cleanup-hint:empty { display: none; }
+.cleanup-note { text-align: left; margin-bottom: 14px; }
 
 @media (max-width: 860px) {
   /* 关键：flex-basis 118px 在竖排下会变成「高度 118px」，

@@ -620,30 +620,39 @@ async function loadStale() {
 
 async function loadCleanup(run) {
   const hint = $("#cleanupHint");
+  // run=false（首次进入）也自动算一次：此前进页面只挂空列表，用户看到的
+  // 是一屏空白加一个不知道干嘛的按钮——「意义不明」主要来自这里。
+  if (!run && !$("#cleanupList").children.length) run = true;
   if (run) {
     hint.textContent = "正在算…";
     $("#cleanupGo").disabled = true;
   }
   try {
     const d = await api("/api/cleanup");
-    if (run) hint.textContent = `共 ${d.total} 个库，${d.count} 个进入候选`;
+    hint.textContent = `共 ${d.total} 个库，${d.count} 个进入候选`;
     $("#cleanupList").innerHTML = d.items.length
       ? d.items.map((c) => `<article class="card" data-id="${c.id}" data-ctx="repo">
           <div class="name"><a href="${esc(c.html_url || "#")}" target="_blank" rel="noreferrer" data-stop>${esc(c.full_name || c.id)}</a>
             ${c.language ? `<span class="badge">${esc(c.language)}</span>` : ""}
             ${c.archived ? '<span class="badge arch">归档</span>' : ""}
             <span class="badge warn">${(c.signals || []).length} 条信号</span></div>
-          ${c.digest ? `<div class="digest">${esc(c.digest.split("\n")[0])}</div>` : `<div class="desc">${esc(c.description || "（无描述）")}</div>`}
-          <div class="desc">${esc((c.signals || []).join(" · ") || "—")}</div>
+          ${c.digest ? `<div class="digest">${esc(c.digest.split("\n")[0])}</div>` : ""}
+          <ul class="signals">${(c.signals || []).map((x) => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="foot"><span>★ ${fmt(c.stars)}</span><span class="lang">${esc(c.language || "—")}</span>
             <span>最后推送 ${ago(c.pushed_at)}</span><span class="sp"></span>
             <button class="act" data-act="open">详情</button></div>
         </article>`).join("")
-      : `<div class="empty">没有命中清理信号。判定标准：长期没推送、从没打开过、已归档、已放弃——命中两条以上才算候选。</div>`;
+      : `<div class="empty">这 ${d.total} 个库里没有同时命中两条信号的，暂时没什么可清的。</div>`;
   } catch (e) {
-    hint.textContent = "失败：" + e.message;
+    // 「失败：unknown endpoint」这种话对用户没有任何信息量——它几乎只出现在
+    // 服务端版本比页面旧（接口还没上线）时。直接说人话，原始消息挂在 title 里备查。
+    hint.textContent =
+      e.message && e.message.includes("unknown endpoint")
+        ? "服务端还没这个接口，重启一下服务（./start.sh）再进这页"
+        : "算不出来，稍后重试";
+    hint.title = e.message || "";
   } finally {
-    if (run) $("#cleanupGo").disabled = false;
+    $("#cleanupGo").disabled = false;
   }
 }
 
@@ -778,6 +787,11 @@ function showView(v) {
     const el = $(sel);
     if (el) el.hidden = k !== v;
   }
+  // 顶部搜索/排序作用于主列表，别的页面（发现/新版本/清理/设置）各有自己的
+  // 操作条，留着这排控件只会让人以为是本页的筛选器——用户反馈「意义不明」
+  // 一半来自这里。
+  const top = document.querySelector(".topbar");
+  if (top) top.hidden = v !== "repos";
   // 停滞不是独立面板，它就是主列表 + 一条工具行
   const bar = $("#staleBar");
   if (bar) bar.hidden = state.filter !== "stale";

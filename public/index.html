@@ -138,11 +138,17 @@
     </div>
 
     <div id="viewCleanup" hidden>
-      <div class="discoverbar">
-        <button id="cleanupGo" class="primary">生成清理建议</button>
-        <span class="minihint" id="cleanupHint"></span>
+      <div class="cleanupbar">
+        <div class="cleanup-lead">
+          <strong>清理建议</strong>
+          <span>同时命中两条以上信号的仓库会列在这里：上游长期没推送、收藏后从未打开、已归档、已标记放弃。</span>
+        </div>
+        <button id="cleanupGo" class="ghost">重新扫描</button>
       </div>
-      <div class="minihint safetyline">建议只是建议：这里不会替你取消 star，也不会自动隐藏任何仓库。真要处置，点进详情手动操作。</div>
+      <div class="cleanup-hint" id="cleanupHint"></div>
+      <div class="minihint cleanup-note">
+        建议只是建议：这里不会替你取消 star，也不会自动隐藏任何仓库。真要处置，点进详情手动操作。
+      </div>
       <div id="cleanupList" class="cards"></div>
     </div>
 
