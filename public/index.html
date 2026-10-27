@@ -18,25 +18,38 @@
       <button id="themeBtn" class="icon" type="button" aria-label="切换明暗主题" title="切换主题">◐</button>
     </div>
 
-    <nav class="nav">
-      <button class="navitem active" data-scope="all"><i>▦</i>全部 <em id="nAll">0</em></button>
-      <button class="navitem" data-scope="starred"><i>★</i>我 Star 的 <em id="nStar">0</em></button>
-      <button class="navitem" data-scope="fork"><i>⑂</i>我的 Fork <em id="nFork">0</em></button>
-      <button class="navitem" data-scope="hidden"><i>◌</i>已隐藏 <em id="nHide">0</em></button>
-      <button class="navitem" data-scope="discover"><i>✦</i>发现过的 <em id="nDisc">0</em></button>
-      <button class="navitem" data-view="discover"><i>✦</i>发现热门</button>
-      <button class="navitem" data-view="releases"><i>⬆</i>新版本</button>
-    </nav>
+    <!-- 中间段单独做成滚动容器：底部「同步 / 导出 / 设置」常驻可见，
+         不再随标签、语言列表变长被挤出视口（侧栏内容越攒越多，这是必然发生的） -->
+    <div class="sidebody">
+
+    <div class="sideblock navblock first">
+      <div class="sidehead">库</div>
+      <nav class="nav" aria-label="库">
+        <button class="navitem active" data-scope="all"><i>▦</i>全部 <em id="nAll">0</em></button>
+        <button class="navitem" data-scope="starred"><i>★</i>我 Star 的 <em id="nStar">0</em></button>
+        <button class="navitem" data-scope="fork"><i>⑂</i>我的 Fork <em id="nFork">0</em></button>
+        <button class="navitem" data-scope="hidden"><i>◌</i>已隐藏 <em id="nHide">0</em></button>
+        <button class="navitem" data-scope="discover"><i>✦</i>发现过的 <em id="nDisc">0</em></button>
+      </nav>
+    </div>
+
+    <div class="sideblock navblock">
+      <div class="sidehead">工具</div>
+      <nav class="nav" aria-label="工具页">
+        <button class="navitem" data-view="discover"><i>✦</i>发现热门</button>
+        <button class="navitem" data-view="releases"><i>⬆</i>新版本</button>
+        <button class="navitem" data-view="cleanup"><i>♻</i>清理建议</button>
+      </nav>
+    </div>
 
     <div class="sideblock">
-      <div class="sidehead">待办与体检</div>
+      <div class="sidehead">待办 <span class="sidehead-note">筛当前列表</span></div>
       <div class="taglist">
         <!-- 这三个是「列表过滤器」（data-filter），不是独立面板（data-view）：
              它们复用主列表 #viewRepos，只是把服务端的 view 参数换掉。 -->
         <button class="navitem slim" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
         <button class="navitem slim" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
         <button class="navitem slim" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
-        <button class="navitem slim" data-view="cleanup"><i>♻</i>清理建议</button>
       </div>
     </div>
 
@@ -52,6 +65,8 @@
       <div id="langList" class="taglist"></div>
       <button id="langMore" class="morebtn" type="button" hidden>展开全部</button>
     </div>
+
+    </div><!-- /sidebody -->
 
     <div class="sidefoot">
       <button id="syncBtn" class="primary">同步 GitHub</button>
