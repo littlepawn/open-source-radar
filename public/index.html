@@ -37,7 +37,6 @@
         <button class="navitem slim" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
         <button class="navitem slim" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
         <button class="navitem slim" data-view="cleanup"><i>♻</i>清理建议</button>
-        <button class="navitem slim" data-view="ai"><i>✧</i>AI 设置</button>
       </div>
     </div>
 
@@ -56,7 +55,10 @@
 
     <div class="sidefoot">
       <button id="syncBtn" class="primary">同步 GitHub</button>
-      <button id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
+      <div class="footrow">
+        <button id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
+        <button id="setBtn" class="ghost" data-view="settings" title="设置：AI 接入等">⚙ 设置</button>
+      </div>
       <div class="minihint" id="syncHint">未同步</div>
       <div class="userbox" id="userbox" hidden>
         <img id="userAvatar" alt="" />
@@ -124,35 +126,43 @@
       <div id="cleanupList" class="cards"></div>
     </div>
 
-    <div id="viewAI" hidden>
+    <div id="viewSettings" hidden>
       <div class="aipanel">
-        <div class="sec-title">AI 接入</div>
-        <div class="minihint">任何兼容 OpenAI Chat Completions 的服务都能用：官方 OpenAI、DeepSeek、Moonshot、智谱、通义、本机 Ollama 等。Key 加密后存本地库，不出本机。</div>
-        <div class="aiform">
-          <label class="frow"><span>启用</span><input id="aiEnabled" type="checkbox" /></label>
-          <label class="frow"><span>服务预设</span>
-            <select id="aiPreset"></select>
-          </label>
-          <label class="frow"><span>Base URL</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" /></label>
-          <label class="frow"><span>模型</span><input id="aiModel" placeholder="deepseek-chat" /></label>
-          <label class="frow"><span>API Key</span><input id="aiKey" type="password" placeholder="留空表示不修改已保存的 Key" /></label>
-          <label class="frow"><span>温度</span><input id="aiTemp" type="number" step="0.1" min="0" max="2" placeholder="0.2" /></label>
-          <label class="frow"><span>单次上限 tokens</span><input id="aiMax" type="number" min="200" max="8000" placeholder="2000" /></label>
-          <label class="frow col"><span>额外系统提示（可选）</span>
-            <textarea id="aiExtra" rows="3" placeholder="例如：回答尽量短，先说能不能用在生产环境"></textarea>
-          </label>
-        </div>
-        <div class="btnrow">
-          <button id="aiSave" class="primary">保存</button>
-          <button id="aiTest" class="ghost">测试连通</button>
-          <span class="minihint" id="aiHint"></span>
-        </div>
-        <div class="sec-title">问什么比较有用</div>
-        <div class="minihint">
-          打开任意仓库 → 详情页底部「问 AI」。已自动带上 README、目录结构和关键文件内容，所以可以直接问：
-          「这库和 X 比有什么取舍」「生产环境敢用吗，坑在哪」「想只用一个功能，怎么最小改造」
-          「这库还活跃吗，维护者是谁」「它依赖了哪些外部服务」。
-        </div>
+        <h2 class="set-h">设置</h2>
+        <!-- 跳转条由 app.js 按 .set-sec 的数量动态生成：只有一节时不显示 -->
+        <nav class="set-nav" id="setNav" hidden></nav>
+
+        <section class="set-sec" id="set-ai" data-nav="AI 接入">
+          <h3 class="set-h3">AI 接入</h3>
+          <div class="minihint">任何兼容 OpenAI Chat Completions 的服务都能用：官方 OpenAI、DeepSeek、Moonshot、智谱、通义、本机 Ollama 等。Key 加密后存本地库，不出本机。也可以先点上方的「AI 接入」快速跳到这节。</div>
+          <div class="aiform" id="setAI">
+            <label class="frow"><span>启用</span><input id="aiEnabled" type="checkbox" /></label>
+            <label class="frow"><span>服务预设</span>
+              <select id="aiPreset"></select>
+            </label>
+            <label class="frow"><span>Base URL</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" /></label>
+            <label class="frow"><span>模型</span><input id="aiModel" placeholder="deepseek-chat" /></label>
+            <label class="frow"><span>API Key</span><input id="aiKey" type="password" placeholder="留空表示不修改已保存的 Key" /></label>
+            <label class="frow"><span>温度</span><input id="aiTemp" type="number" step="0.1" min="0" max="2" placeholder="0.2" /></label>
+            <label class="frow"><span>单次上限 tokens</span><input id="aiMax" type="number" min="200" max="8000" placeholder="2000" /></label>
+            <label class="frow col"><span>额外系统提示（可选）</span>
+              <textarea id="aiExtra" rows="3" placeholder="例如：回答尽量短，先说能不能用在生产环境"></textarea>
+            </label>
+          </div>
+          <div class="btnrow">
+            <button id="aiSave" class="primary">保存 AI 配置</button>
+            <button id="aiTest" class="ghost">测试连通</button>
+            <span class="minihint" id="aiHint"></span>
+          </div>
+          <div class="minihint">
+            用法：打开任意仓库 → 详情页底部「问 AI」。已自动带上 README、目录结构和关键文件内容，所以可以直接问：
+            「这库和 X 比有什么取舍」「生产环境敢用吗，坑在哪」「想只用一个功能，怎么最小改造」
+            「这库还活跃吗，维护者是谁」「它依赖了哪些外部服务」。
+          </div>
+        </section>
+
+        <!-- 后续设置项往这里加：每项一个 <section class="set-sec">，
+             侧栏顶部会根据这些 section 的 data-nav 自动生成跳转条。 -->
       </div>
     </div>
   </main>

@@ -93,6 +93,27 @@ function activeFirst(rows, key, name, open) {
   return [...rows.filter((r) => r[key] === name), ...rows.filter((r) => r[key] !== name)];
 }
 
+// 设置页的跳转条：按现存 .set-sec 的 data-nav 生成。只有一节时整条不显示，
+// 免得一个「AI 接入」孤零零挂在顶上像个假导航。后续加设置项时只写 section，这里自动跟上。
+function buildSetNav() {
+  const nav = $("#setNav");
+  if (!nav) return;
+  const secs = [...document.querySelectorAll("#viewSettings .set-sec")];
+  nav.hidden = secs.length < 2;
+  if (secs.length < 2) return;
+  for (const s of secs) {
+    const id = s.id;
+    const label = s.dataset.nav || s.querySelector(".set-h3")?.textContent || id;
+    const b = nav.querySelector(`[data-go="${id}"]`);
+    if (b) { b.textContent = label; continue; }
+    const btn = document.createElement("button");
+    btn.className = "set-navbtn";
+    btn.dataset.go = id;
+    btn.textContent = label;
+    nav.appendChild(btn);
+  }
+}
+
 /* ---------------- 侧栏渲染 */
 function renderSide() {
   const st = state.status || {};
@@ -411,7 +432,7 @@ function aiBlock(r) {
   if (!(state.status?.ai_enabled)) {
     return `<div class="sec">
       <label>问 AI</label>
-      <div class="minihint">还没配 AI。<button class="link" data-view="ai">去填 Base URL / 模型 / Key</button>，配好后这里能直接问这个库的细节。</div>
+      <div class="minihint">还没配 AI。<button class="link" data-view="settings" data-anchor="set-ai">去填 Base URL / 模型 / Key</button>，配好后这里能直接问这个库的细节。</div>
     </div>`;
   }
   // 一次对话的多轮历史留在 DOM 里，换仓库就重置（key 是 repo id）
@@ -613,6 +634,12 @@ async function refresh(reloadList = true) {
 
 /* 事件绑定 */
 document.addEventListener("click", async (e) => {
+  // 设置页内的跳转条：滚到对应小节，不改变 state
+  const setGo = e.target.closest("[data-go]");
+  if (setGo) {
+    document.getElementById(setGo.dataset.go)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    return;
+  }
   const navScope = e.target.closest("[data-scope]");
   const navView = e.target.closest("[data-view]");
   const navFilter = e.target.closest("[data-filter]");
@@ -680,12 +707,24 @@ document.addEventListener("click", async (e) => {
     $("#drawer").hidden = true;
     document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
     showView(state.view);
-    document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b === navView));
+    // 侧栏高亮跟着走：设置入口在侧栏底部（#setBtn），不在 nav 里，
+    // 所以按 data-view 值匹配，而不是按元素是否在 nav 内。
+    document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === state.view));
     document.querySelectorAll("[data-scope]").forEach((b) => b.classList.remove("active"));
     if (state.view === "discover") await loadDiscover();
     if (state.view === "releases") await loadReleases(false);
     if (state.view === "cleanup") await loadCleanup(false);
-    if (state.view === "ai" && window.RadarAI) await RadarAI.reload();
+    if (state.view === "settings") {
+      if (window.RadarAI) await RadarAI.reload();
+      buildSetNav();
+      // 带 data-anchor 的入口（比如抽屉里「去填 Base URL」）要滚到对应小节，
+      // 否则用户点了跳到设置页顶部，还得自己往下找。
+      const anchor = navView.dataset.anchor;
+      if (anchor) {
+        const sec = document.getElementById(anchor);
+        if (sec) setTimeout(() => sec.scrollIntoView({ block: "start", behavior: "smooth" }), 60);
+      }
+    }
     return;
   }
   if (openBtn) {
@@ -701,7 +740,7 @@ document.addEventListener("click", async (e) => {
 function showView(v) {
   const map = {
     repos: "#viewRepos", discover: "#viewDiscover", releases: "#viewReleases",
-    cleanup: "#viewCleanup", ai: "#viewAI",
+    cleanup: "#viewCleanup", settings: "#viewSettings",
   };
   for (const [k, sel] of Object.entries(map)) {
     const el = $(sel);
