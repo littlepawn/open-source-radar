@@ -47,9 +47,9 @@
       <div class="taglist">
         <!-- 这三个是「列表过滤器」（data-filter），不是独立面板（data-view）：
              它们复用主列表 #viewRepos，只是把服务端的 view 参数换掉。 -->
-        <button class="navitem slim" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
-        <button class="navitem slim" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
-        <button class="navitem slim" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
+        <button class="navitem slim" id="fToread" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
+        <button class="navitem slim" id="fStale" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
+        <button class="navitem slim" id="fDropped" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
       </div>
     </div>
 
@@ -104,7 +104,7 @@
       </div>
       <div class="crumb" id="crumb"></div>
       <div id="cards" class="cards"></div>
-      <div id="empty" class="empty" hidden>没有匹配结果。先点左下角「同步 GitHub」，或换个关键词。</div>
+      <div id="empty" class="empty" hidden></div>
     </div>
 
     <div id="viewDiscover" hidden>

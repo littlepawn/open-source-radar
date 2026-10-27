@@ -416,6 +416,10 @@ a.link { color: var(--accent-2); }
 
 /* 侧栏里「待办与体检」用小号 navitem，避免和外层主导航抢视觉重量 */
 .navitem.slim { font-size: 12.5px; padding: 5px 8px; }
+/* 计数为 0 的待办入口：置灰 + 禁用。点进去只有一句空话，比按钮是死的更容易被当成 bug */
+.navitem.is-empty { opacity: .45; cursor: default; }
+.navitem.is-empty:hover { background: transparent; color: inherit; }
+.navitem.is-empty em { opacity: .7; }
 
 /* 卡片上的标记：待读用强调色、落后用告警色。都是 .badge 的变体，
    颜色走主题变量，暗色/亮色都不用单独覆盖。 */

@@ -118,16 +118,29 @@ function buildSetNav() {
 function renderSide() {
   const st = state.status || {};
   $("#whoami").textContent = st.login ? `@${st.login} · ${st.token || ""}` : "本地 · 未同步";
-  $("#nAll").textContent = (st.counts?.starred || 0) + (st.counts?.fork || 0);
+  // 全部 = 后端按同一套 WHERE 数出来的，别在这自己加：
+  // 原来写 starred+fork，既掺进了 discover 收编的库，也没扣掉 hidden，
+  // 侧栏 226、点进去 294 就是这么来的。
+  $("#nAll").textContent = st.counts?.all ?? 0;
   $("#nStar").textContent = st.counts?.starred || 0;
   $("#nFork").textContent = st.counts?.fork || 0;
   $("#nHide").textContent = st.counts?.hidden || 0;
   $("#nDisc").textContent = st.counts?.discover || 0;
   // 待办与体检的四个计数：后端一次算好，前端只负责摆，别各算一套
   const c = st.counts || {};
-  if ($("#nToread")) $("#nToread").textContent = c.toread || 0;
-  if ($("#nStale")) $("#nStale").textContent = c.stale || 0;
-  if ($("#nDropped")) $("#nDropped").textContent = c.dropped || 0;
+  for (const [sel, num] of [["#nToread", "#fToread"], ["#nStale", "#fStale"], ["#nDropped", "#fDropped"]]) {
+    const n = c[num.slice(2).toLowerCase()] || 0;
+    if ($(sel)) $(sel).textContent = n;
+    // 0 条的入口点进去只有一句空话，更像「坏了」而不是「还没有」：
+    // 置灰 + 禁用，让数字先说话。真点开了也能看到下面的空态文案。
+    const btn = $(num);
+    if (btn) {
+      btn.classList.toggle("is-empty", n === 0);
+      btn.disabled = n === 0;
+      if (n === 0) btn.setAttribute("title", "这里还没有条目");
+      else btn.removeAttribute("title");
+    }
+  }
   const tags = st.tags || [];
   state.tags = tags;
   $("#tagCount").textContent = tags.length ? `${tags.length}` : "";
@@ -198,6 +211,20 @@ function cardHTML(r, ctx = "repo") {
   </article>`;
 }
 
+// 空列表的原因有四种，混成一句「先去同步」会让人以为同步坏了——
+// 明明库里 297 个仓库，点「待读队列」却说「没有匹配结果，去同步」。
+function emptyText() {
+  const n = state.status?.counts || {};
+  if (state.filter === "toread") return "待读队列是空的。在仓库详情里点「加入待读」，这里就会有它。";
+  if (state.filter === "dropped") return "还没有放弃过的仓库。详情里点「放弃」表示不再关注，它不会删掉 star。";
+  if (state.filter === "stale") return "没有半年没推送的仓库，挺健康。";
+  if (state.q) return `没有匹配「${state.q}」的仓库。换个关键词，或清空搜索。`;
+  if (state.tag) return `标签「${state.tag}」下还没有仓库。`;
+  if (state.lang) return `没有用 ${state.lang} 写的仓库。`;
+  if (n.all === 0) return "还没有仓库。先点左下角「同步 GitHub」。";
+  return "没有匹配结果。";
+}
+
 /* ---------------- 列表 */
 async function loadRepos() {
   const q = new URLSearchParams({ q: state.q, source: state.scope, tag: state.tag, lang: state.lang, sort: state.sort });
@@ -208,7 +235,9 @@ async function loadRepos() {
   const d = await api("/api/repos?" + q.toString());
   state.items = d.items || [];
   $("#cards").innerHTML = state.items.map((r) => cardHTML(r)).join("");
-  $("#empty").hidden = state.items.length > 0;
+  const empty = $("#empty");
+  empty.hidden = state.items.length > 0;
+  if (!empty.hidden) empty.textContent = emptyText();
   const bits = [`<b>${state.items.length}</b> 个仓库`];
   const FILTER_LABEL = { toread: "待读队列", stale: "停滞超半年", dropped: "已放弃" };
   if (state.filter) bits.push(`视图 <b>${FILTER_LABEL[state.filter] || state.filter}</b>`);

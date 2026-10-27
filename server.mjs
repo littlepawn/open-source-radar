@@ -1017,10 +1017,10 @@ function serveStatic(pathname) {
 // 两个都允许手改；只有 digest 会带 digest_src='manual'，note 不参与来源判定。
 const UPDATABLE = new Set(["digest", "homepage", "note"]);
 
-function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", scope = "all", view = "", limit = 5000 }) {
-  // limit 来自查询参数，直接拼进 SQL 会得到 LIMIT NaN（实测 500 no such column: NaN），
-  // 超大值还会拖出全表。收敛成 1..2000 的有限整数。
-  limit = Math.min(2000, Math.max(1, Math.trunc(Number(limit)) || 500));
+// WHERE 构造拆出来，让「列表」和「侧栏计数」用同一套判据。
+// 之前侧栏的 4 个库计数直接 GROUP BY source 数，既没排除 source='discover'，
+// 也没管 archived —— 「全部 294」和实际列表条数对不上就是这么来的。
+function repoWhere({ q = "", source = "", tag = "", lang = "", scope = "all", view = "" }) {
   const where = [];
   const args = [];
   // hidden 谓词按 scope/source 组合显式构造。曾用 where[indexOf(...)] 改写，
@@ -1060,6 +1060,14 @@ function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", sc
     const like = `%${q.trim()}%`;
     args.push(like, like, like, like, like);
   }
+  return { where, args };
+}
+
+function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", scope = "all", view = "", limit = 5000 }) {
+  // limit 来自查询参数，直接拼进 SQL 会得到 LIMIT NaN（实测 500 no such column: NaN），
+  // 超大值还会拖出全表。收敛成 1..2000 的有限整数。
+  limit = Math.min(2000, Math.max(1, Math.trunc(Number(limit)) || 500));
+  const { where, args } = repoWhere({ q, source, tag, lang, scope, view });
   const orderMap = {
     stars: "r.stars DESC",
     pushed: "r.pushed_at DESC",
@@ -1204,29 +1212,44 @@ const server = Bun.serve({
     try {
       /* ---- 状态 ---- */
       if (p === "/api/status") {
-        const counts = db.query(`
-          SELECT source, COUNT(*) n FROM repos
-          WHERE id NOT IN (SELECT repo_id FROM hidden) GROUP BY source`).all();
-        const bySource = Object.fromEntries(counts.map((c) => [c.source, c.n]));
-        // 侧栏「已隐藏」的计数：前端一直在读 counts.hidden，服务端却没给过
-        bySource.hidden = db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0;
-        const tags = db.query(`
-          SELECT t.id, t.name, t.kind, t.color, t.parent, COUNT(rt.repo_id) n
-          FROM tags t LEFT JOIN repo_tags rt ON rt.tag_id=t.id
-          GROUP BY t.id ORDER BY COALESCE(t.parent,''), n DESC, t.name`).all();
-        const langs = db.query(`
-          SELECT language, COUNT(*) n FROM repos
-          WHERE language != '' AND id NOT IN (SELECT repo_id FROM hidden)
-          GROUP BY language ORDER BY n DESC LIMIT 40`).all();
         // 视图计数：待读 / 已放弃 / 停滞。前端侧栏要显示数字，后端一次给全。
         // 判据与 repoList 的 view 过滤、lib/insight.mjs 的 stagnation 保持一致。
-        const staleBefore = new Date(Date.now() - 180 * 86400000).toISOString();
-        const viewCount = db.query(`
-          SELECT
-            SUM(CASE WHEN toread = 1 AND COALESCE(dropped,0) = 0 THEN 1 ELSE 0 END) AS toread,
-            SUM(CASE WHEN dropped = 1 THEN 1 ELSE 0 END) AS dropped,
-            SUM(CASE WHEN COALESCE(dropped,0) = 0 AND (archived = 1 OR (pushed_at IS NOT NULL AND pushed_at != '' AND pushed_at < ?)) THEN 1 ELSE 0 END) AS stale
-          FROM repos WHERE id NOT IN (SELECT repo_id FROM hidden)`).get(staleBefore) || {};
+        //
+        // 「全部」这个数字曾经是 starred+fork 直接相加，结果 297 个库里
+        // 侧栏写 226、列表给 294：discover 那几条没排除、hidden 那条也没扣。
+        // 现在四个库计数全部走同一套 repoWhere，和点进去的列表同源。
+        const cnt = (opt) => {
+          const { where, args } = repoWhere(opt);
+          return db.query(`SELECT COUNT(*) n FROM repos r LEFT JOIN hidden h ON h.repo_id = r.id
+            WHERE ${where.join(" AND ")}`).get(...args)?.n || 0;
+        };
+        const viewCount = {
+          all: cnt({ scope: "all" }),
+          starred: cnt({ scope: "all", source: "starred" }),
+          fork: cnt({ scope: "all", source: "fork" }),
+          discover: cnt({ scope: "all", source: "discover" }),
+          // 「已隐藏」不是 scope 过滤能算出来的（hidden 表是单独的），单独数
+          hidden: db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0,
+          toread: cnt({ scope: "all", view: "toread" }),
+          dropped: cnt({ scope: "all", view: "dropped" }),
+          stale: cnt({ scope: "all", view: "stale" }),
+        };
+        // 标签与语言的计数必须和「点进去看到的列表」同源，否则侧栏写 10、列表给 12。
+        // 语言这里原来漏了 source!='discover'（收编进库的临时仓库不该进主列表计数）
+        // 和 dropped=0（已放弃的也不在主列表里）。
+        // 标签计数同样过滤掉 discover / dropped / hidden，理由见下方 langs
+        const tags = db.query(`
+          SELECT t.id, t.name, t.kind, t.color, t.parent, COUNT(v.id) n
+          FROM tags t
+          LEFT JOIN repo_tags rt ON rt.tag_id=t.id
+          LEFT JOIN repos v ON v.id=rt.repo_id AND COALESCE(v.dropped,0)=0 AND v.source!='discover'
+            AND v.id NOT IN (SELECT repo_id FROM hidden)
+          GROUP BY t.id ORDER BY COALESCE(t.parent,''), n DESC, t.name`).all();
+        const langs = db.query(`
+          SELECT language, COUNT(*) n FROM repos r
+          WHERE language != '' AND COALESCE(dropped,0) = 0 AND source != 'discover'
+            AND id NOT IN (SELECT repo_id FROM hidden)
+          GROUP BY language ORDER BY n DESC LIMIT 40`).all();
         return json({
           login: getMeta("login"),
           authed: !!sessionInfo(req),
@@ -1234,13 +1257,14 @@ const server = Bun.serve({
           token: currentToken() ? "已配置" : "未配置（匿名 60 次/小时）",
           rate,
           counts: {
-            starred: bySource.starred || 0,
-            fork: bySource.fork || 0,
-            discover: bySource.discover || 0,
-            hidden: bySource.hidden || 0,
-            toread: viewCount.toread || 0,
-            dropped: viewCount.dropped || 0,
-            stale: viewCount.stale || 0,
+            all: viewCount.all,
+            starred: viewCount.starred,
+            fork: viewCount.fork,
+            discover: viewCount.discover,
+            hidden: viewCount.hidden,
+            toread: viewCount.toread,
+            dropped: viewCount.dropped,
+            stale: viewCount.stale,
           },
           stars_synced_at: getMeta("stars_synced_at"),
           forks_synced_at: getMeta("forks_synced_at"),
