@@ -9,6 +9,7 @@
   --text-dim: #9a9da4;
   --text-faint: #71757c;
   --accent: #c9d1d9;
+  --accent-fg: #16181c;   /* 配在 accent 底上的文字 */
   --accent-2: #8ab4f8;
   --warn: #e3b341;
   --danger: #f0827a;
@@ -42,6 +43,7 @@
   --text-dim: #5b6472;
   --text-faint: #8b93a1;
   --accent: #2b3038;
+  --accent-fg: #ffffff;
   --accent-2: #2563eb;
   --warn: #b45309;
   --danger: #dc2626;
@@ -51,6 +53,10 @@
   --sb-thumb-hover: rgba(15,23,42,.3);
 }
 * { box-sizing: border-box; }
+/* 让浏览器原生控件（select 下拉、滚动条、日期选择器）跟随主题明暗，
+   否则深色主题下 select 的选项是白底 + 近白文字，看不见 */
+:root { color-scheme: dark; }
+[data-theme="light"] { color-scheme: light; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -115,12 +121,12 @@ button { cursor: pointer; }
 }
 .chip b { color: var(--text-faint); font-weight: 400; margin-left: 4px; font-size: 11px; }
 .chip:hover { border-color: var(--accent); color: var(--accent); }
-.chip.active { background: var(--accent); color: #16181c; border-color: var(--accent); }
-.chip.active b { color: #16181c; opacity: .7; }
+.chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+.chip.active b { color: var(--accent-fg); opacity: .7; }
 
 .sidefoot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
 .primary {
-  background: var(--accent); color: #16181c; border: 0; border-radius: 9px;
+  background: var(--accent); color: var(--accent-fg); border: 0; border-radius: 9px;
   padding: 9px 12px; font-weight: 600;
 }
 .primary:hover { filter: brightness(1.07); }
@@ -251,7 +257,7 @@ select {
   .foot .sp { margin-left: auto; }
 }
 
-.foot .up { color: var(--muted); font-size: 11px; }
+.foot .up { color: var(--text-faint); font-size: 11px; }
 
 /* ================= 登录页 ================= */
 .auth-body { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
@@ -299,6 +305,8 @@ select {
   display: flex; align-items: center; gap: 8px; padding: 7px 8px;
   border: 1px solid var(--line); border-radius: 9px; font-size: 12px; color: var(--text-dim);
 }
+/* 作者类规则会盖掉 UA 的 [hidden]{display:none}，不补这条 hidden 属性等于无效 */
+.userbox[hidden] { display: none !important; }
 .userbox img { width: 20px; height: 20px; border-radius: 50%; }
 .userbox span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .userbox .out {

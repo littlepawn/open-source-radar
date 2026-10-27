@@ -31,7 +31,10 @@ EXPOSE 8788
 VOLUME ["/data"]
 
 # 健康检查：未登录时 /login 直接返回 200 即说明服务活着
+# 用 wget 的退出码判断：busybox wget 对 4xx/5xx 返回非零。
+# 之前 `grep -q "200"` 会匹配到 Content-Length: 200x 之类的任意位置，
+# 一个 500 响应也能被判成 healthy。
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qS -O /dev/null "http://127.0.0.1:${PORT}/login" 2>&1 | grep -q "200" || exit 1
+  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/login" || exit 1
 
 CMD ["bun", "server.mjs"]

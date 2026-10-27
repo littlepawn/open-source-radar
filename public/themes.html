@@ -14,7 +14,7 @@
   }
   h1 { font-size: 20px; margin: 0 0 6px; }
   .lead { color: #8b94a3; font-size: 13px; margin-bottom: 26px; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); gap: 22px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(430px, 100%), 1fr)); gap: 22px; }
 
   .pick { border: 1px solid #222834; border-radius: 14px; overflow: hidden; background: #10141a; }
   .pick > header { padding: 12px 14px; display: flex; align-items: baseline; gap: 8px; border-bottom: 1px solid #1c222c; }
@@ -159,11 +159,11 @@ const cardHtml = (t) => `
 </div>`;
 
 document.getElementById("grid").innerHTML = themes.map((t, i) => `
-  <section class="pick ${t.id === 't1' ? 'cur' : ''}" data-id="${t.id}">
+  <section class="pick" data-id="${t.id}">
     <header><b>${i + 1}. ${t.name}</b><span>${t.desc}</span><em>${t.note}</em></header>
     <div class="pane">${cardHtml(t)}</div>
     <div class="acts">
-      <button class="pick1" data-pick="${t.id}">用这套</button>
+      <button data-pick="${t.id}">用这套</button>
       <span class="tag">${t.id}</span>
     </div>
   </section>`).join("") + `
@@ -176,14 +176,28 @@ document.getElementById("grid").innerHTML = themes.map((t, i) => `
     </div>
   </section>`;
 
+// 选中态只有一个真源 selectedId，class / 按钮文案 / cur 徽标全部由它派生，
+// 否则换选后旧的按钮会留着「已选 · tX」而页面同时显示两个选中。
+const THEME_IDS = new Set(themes.map((t) => t.id));
+function syncSelection() {
+  const fromHash = (location.hash || "").replace(/^#/, "");
+  const selectedId = THEME_IDS.has(fromHash) ? fromHash : "t1";
+  document.querySelectorAll(".pick[data-id]").forEach((sec) => {
+    const on = sec.dataset.id === selectedId;
+    sec.classList.toggle("cur", on);
+    const b = sec.querySelector("[data-pick]");
+    if (b) {
+      b.classList.toggle("pick1", on);
+      b.textContent = on ? "已选 · " + sec.dataset.id : "用这套";
+    }
+  });
+  return selectedId;
+}
 document.querySelectorAll("[data-pick]").forEach((b) => {
-  b.onclick = () => {
-    document.querySelectorAll(".pick1").forEach((x) => x.classList.remove("pick1"));
-    b.classList.add("pick1");
-    b.textContent = "已选 · " + b.dataset.pick;
-    location.hash = b.dataset.pick;
-  };
+  b.onclick = () => { location.hash = b.dataset.pick; syncSelection(); };
 });
+window.addEventListener("hashchange", syncSelection);
+syncSelection();
 </script>
 </body>
 </html>

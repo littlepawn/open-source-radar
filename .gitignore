@@ -1,3 +1,23 @@
+# 数据与构建产物
 data/
 node_modules/
 *.log
+*.db
+*.db-wal
+*.db-shm
+*.db-journal
+*.sqlite
+*.sqlite3
+*.bak
+
+# 凭证（server.mjs 读 SESSION_SECRET / GITHUB_TOKEN / GH_TOKEN）
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+.netrc
+.npmrc
+credentials.json
+auth.json

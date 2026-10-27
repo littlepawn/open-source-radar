@@ -126,8 +126,6 @@ CREATE TABLE IF NOT EXISTS events (
 );
 `);
 
-initAuthTables();
-
 const now = () => new Date().toISOString();
 function log(level, msg) {
   try {
@@ -146,19 +144,17 @@ const setMeta = (k, v) =>
 /* ---------------------------------------------------------------- 鉴权 */
 // 会话密钥：优先环境变量；否则首次启动生成并持久化到 db（data 卷里，容器重建不失效）
 const SECRET = (process.env.SESSION_SECRET || "").trim();
-const SESSION_COOKIE = "radar_sid";
-const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;   // 30 天
 
-function b64u(buf) {
-  return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-function unb64u(str) {
-  return Buffer.from(String(str).replace(/-/g, "+").replace(/_/g, "/"), "base64");
-}
-
-// token 加密：AES-256-GCM，密钥由 SESSION_SECRET（或自动生成的库内密钥）派生
+// token 加密：AES-256-GCM，密钥由 SESSION_SECRET（或自动生成的库内密钥）派生。
+// 库内密钥存在 auth 表 k='secret'，不是 meta 表——曾写成 getMeta("auth_secret")，
+// 读不到就静默退化成固定字符串 "radar:null"，等于没加密。
+const authSecret = () => db.query("SELECT v FROM auth WHERE k='secret'").get()?.v || "";
 function deriveKey() {
-  const base = SECRET || getMeta("auth_secret");
+  const base = SECRET || authSecret();
+  if (!base) {
+    console.error("[fatal] 缺少加密密钥（SESSION_SECRET 与 auth.secret 均为空），拒绝启动");
+    process.exit(1);
+  }
   return createHash("sha256").update("radar:" + base).digest();
 }
 function encToken(plain) {
@@ -168,17 +164,31 @@ function encToken(plain) {
   return b64u(Buffer.concat([iv, c.getAuthTag(), enc]));
 }
 function decToken(blob) {
+  return decTokenWith(blob, deriveKey());
+}
+function decTokenWith(blob, key) {
   try {
     const raw = unb64u(blob);
     const iv = raw.subarray(0, 12);
     const tag = raw.subarray(12, 28);
     const enc = raw.subarray(28);
-    const d = createDecipheriv("aes-256-gcm", deriveKey(), iv);
+    const d = createDecipheriv("aes-256-gcm", key, iv);
     d.setAuthTag(tag);
     return Buffer.concat([d.update(enc), d.final()]).toString("utf8");
   } catch {
     return "";
   }
+}
+
+initAuthTables();
+const SESSION_COOKIE = "radar_sid";
+const SESSION_TTL_MS = 1000 * 60 * 60 * 24 * 30;   // 30 天
+
+function b64u(buf) {
+  return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function unb64u(str) {
+  return Buffer.from(String(str).replace(/-/g, "+").replace(/_/g, "/"), "base64");
 }
 
 // 会话表
@@ -198,6 +208,25 @@ function initAuthTables() {
   // 自动生成并持久化密钥（仅当没设 SESSION_SECRET）
   const has = db.query("SELECT v FROM auth WHERE k='secret'").get();
   if (!has) db.query("INSERT INTO auth (k,v) VALUES ('secret',?)").run(randomBytes(32).toString("hex"));
+  migrateLegacyToken();
+}
+
+// 密钥来源曾写错（读 meta 表读不到），旧密文实际用固定密钥 "radar:null" 加密。
+// 修好来源后旧密文解不开，这里做一次性迁移：旧密钥解密 → 新密钥重加密。
+function migrateLegacyToken() {
+  const row = db.query("SELECT v FROM auth WHERE k='token'").get();
+  if (!row) return;
+  if (decTokenWith(row.v, deriveKey())) return;   // 新密钥能解，无需迁移
+  const legacyBase = "null";
+  const legacyKey = createHash("sha256").update("radar:" + legacyBase).digest();
+  const plain = decTokenWith(row.v, legacyKey);
+  if (!plain) {
+    log("warn", "已存 token 无法用新旧任一密钥解密，需重新登录");
+    db.query("DELETE FROM auth WHERE k='token'").run();
+    return;
+  }
+  db.query("UPDATE auth SET v=? WHERE k='token'").run(encToken(plain));
+  log("info", "已用新密钥重新加密已存 token");
 }
 
 let runtimeToken = "";     // 解密后的 token，进程内存里常驻
@@ -302,16 +331,16 @@ async function gh(path, { retry = 3, accept } = {}) {
     if (res.ok) {
       const remaining = Number(rl("remaining") ?? 1);
       const isSearch = url.includes("/search/");
-      // 搜索 30/min、核心 60/h；留 2 次余量后主动等窗口
-      if (remaining <= 2 && rate.reset) {
+      // 配额将尽时要在「下次请求」前等，而不是扔掉这次已经成功拿到的响应再重发：
+      // 搜索结果是分页的，重发会得到不同 offset 的内容，丢页比等待更糟。
+      const data = await res.json();
+      if (remaining <= 2 && rate.reset && isSearch) {
         const wait = Math.max(0, rate.reset - Date.now());
-        if (wait > 0 && wait < 15 * 60 * 1000 && isSearch) {
-          log("warn", `搜索配额仅剩 ${remaining}，等待 ${Math.round(wait / 1000)}s`);
+        if (wait > 0 && wait < 15 * 60 * 1000) {
+          log("warn", `搜索配额仅剩 ${remaining}，本次结果已保留，等待 ${Math.round(wait / 1000)}s 后再请求`);
           await sleep(wait + 300);
-          continue;
         }
       }
-      const data = await res.json();
       return data;
     }
     if (res.status === 403 || res.status === 429) {
@@ -521,12 +550,10 @@ function applyAutoTags(row) {
   const raw = { ...row, topics: JSON.parse(row.topics || "[]") };
   const { digest, tags } = ruleDigest(raw);
   const existing = db.query("SELECT digest_src FROM repos WHERE id=?").get(row.id);
-  if (!existing || existing.digest_src !== "manual") {
-    db.query("UPDATE repos SET digest=?, digest_src=? WHERE id=?").run(
-      digest,
-      existing?.digest_src === "ai" ? "ai" : "rule",
-      row.id
-    );
+  // 只覆盖 rule 来源（或还没生成过）的简介。AI 生成的内容不能被规则文本替换后
+  // 还挂着 digest_src='ai' 的标签——那等于谎报来源，用户的 AI 摘要也会莫名消失。
+  if (!existing || existing.digest_src === "rule") {
+    db.query("UPDATE repos SET digest=?, digest_src='rule' WHERE id=?").run(digest, row.id);
   }
   return tags;
 }
@@ -793,19 +820,36 @@ function serveStatic(pathname) {
     p = join(PUBLIC_DIR, "index.html");
     if (!existsSync(p)) return new Response("not found", { status: 404 });
   }
+  // 安全响应头：页面大量用 innerHTML 渲染 GitHub 来源的字符串（描述、topics、README），
+  // 一处转义漏掉就是存储型 XSS。CSP 不允许 inline script（本项目没有内联脚本），
+  // connect/img 自家域即可；README 里的外链图片放开 https img-src。
   return new Response(readFileSync(p), {
-    headers: { "content-type": MIME[extname(p)] || "application/octet-stream", "cache-control": "no-cache" },
+    headers: {
+      "content-type": MIME[extname(p)] || "application/octet-stream",
+      "cache-control": "no-cache",
+      "content-security-policy":
+        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https: data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "strict-origin-when-cross-origin",
+      "x-frame-options": "DENY",
+    },
   });
 }
 
 const UPDATABLE = new Set(["digest", "homepage"]);
 
 function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", scope = "all", limit = 5000 }) {
+  // limit 来自查询参数，直接拼进 SQL 会得到 LIMIT NaN（实测 500 no such column: NaN），
+  // 超大值还会拖出全表。收敛成 1..2000 的有限整数。
+  limit = Math.min(2000, Math.max(1, Math.trunc(Number(limit)) || 500));
   const where = [];
   const args = [];
-  if (scope !== "hidden") where.push("h.repo_id IS NULL");
+  // hidden 谓词按 scope/source 组合显式构造。曾用 where[indexOf(...)] 改写，
+  // scope=hidden 时那项根本没 push，indexOf 返回 -1 → where[-1]=... 无效，
+  // 隐藏过滤消失，scope=hidden 会返回全部仓库（实测 226 条）。
+  const wantHidden = scope === "hidden" || source === "hidden";
+  where.push(wantHidden ? "h.repo_id IS NOT NULL" : "h.repo_id IS NULL");
   if (source === "starred" || source === "fork") { where.push("r.source = ?"); args.push(source); }
-  if (source === "hidden") where[where.indexOf("h.repo_id IS NULL")] = "h.repo_id IS NOT NULL";
   if (lang) { where.push("r.language = ?"); args.push(lang); }
   if (tag) {
     where.push("r.id IN (SELECT rt.repo_id FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE t.name=?)");
@@ -908,7 +952,7 @@ const server = Bun.serve({
     }
 
     /* ---- 静态资源：登录页放行，其余在无会话时重定向 ---- */
-    if (req.method === "GET" && !p.startsWith("/api/")) {
+    if ((req.method === "GET" || req.method === "HEAD") && !p.startsWith("/api/")) {
       const isLoginPage = p === "/login" || p === "/login.html";
       const isAsset = /\/(app\.css|app\.js|themes\.html|favicon\.ico)$/.test(p);
       if (!isLoginPage && !isAsset) {
@@ -960,6 +1004,8 @@ const server = Bun.serve({
           SELECT source, COUNT(*) n FROM repos
           WHERE id NOT IN (SELECT repo_id FROM hidden) GROUP BY source`).all();
         const bySource = Object.fromEntries(counts.map((c) => [c.source, c.n]));
+        // 侧栏「已隐藏」的计数：前端一直在读 counts.hidden，服务端却没给过
+        bySource.hidden = db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0;
         const tags = db.query(`
           SELECT t.id, t.name, t.kind, t.color, COUNT(rt.repo_id) n
           FROM tags t LEFT JOIN repo_tags rt ON rt.tag_id=t.id
@@ -974,7 +1020,7 @@ const server = Bun.serve({
           token_source: ENV_TOKEN ? "env" : runtimeToken ? "login" : "none",
           token: currentToken() ? "已配置" : "未配置（匿名 60 次/小时）",
           rate,
-          counts: { starred: bySource.starred || 0, fork: bySource.fork || 0 },
+          counts: { starred: bySource.starred || 0, fork: bySource.fork || 0, hidden: bySource.hidden || 0 },
           stars_synced_at: getMeta("stars_synced_at"),
           forks_synced_at: getMeta("forks_synced_at"),
           releases_checked_at: getMeta("releases_checked_at"),
@@ -1160,3 +1206,22 @@ const server = Bun.serve({
 });
 
 log("info", `开源雷达启动 http://${HOST}:${PORT}  token=${currentToken() ? "yes" : "no"}`);
+
+// 优雅退出：Docker 里 bun 是 PID 1，不处理 SIGTERM 会被 10 秒后 SIGKILL，
+// WAL 文件残留、下次启动要重放恢复。这里关 SSE、停监听、checkpoint 后退出。
+let shuttingDown = false;
+function shutdown(sig) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  log("info", `收到 ${sig}，正在关闭`);
+  for (const send of listeners) {
+    try { send({ type: "done", error: "服务正在关闭", running: false }); } catch {}
+  }
+  listeners.clear();
+  try { server.stop(true); } catch {}
+  try { db.exec("PRAGMA wal_checkpoint(TRUNCATE);"); } catch {}
+  try { db.close(); } catch {}
+  process.exit(0);
+}
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));

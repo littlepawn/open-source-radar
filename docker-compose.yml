@@ -5,7 +5,10 @@ services:
     container_name: open-source-radar
     restart: unless-stopped
     ports:
-      - "${RADAR_PORT:-8788}:8788"
+      # 默认只绑回环：这个面板存着 GitHub token 且可登录，
+      # 直接映射到 0.0.0.0 会让整个局域网都能访问。
+      # 需要局域网访问时显式设置 RADAR_BIND=0.0.0.0
+      - "${RADAR_BIND:-127.0.0.1}:${RADAR_PORT:-8788}:8788"
     volumes:
       - radar-data:/data
     environment:

@@ -29,7 +29,8 @@ async function handler(req) {
 
   let res;
   try {
-    res = await fetch(target, { headers });
+    // 上游无超时会一直挂着连接，stale fallback 只在抛错时触发，永远等不到
+    res = await fetch(target, { headers, signal: AbortSignal.timeout(20000) });
   } catch (e) {
     if (hit) return withMeta(hit.data, "STALE", { "x-cache-error": e.message });
     return new Response(JSON.stringify({ message: String(e) }), { status: 502, headers: { "content-type": "application/json" } });

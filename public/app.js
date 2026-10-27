@@ -13,6 +13,22 @@ const api = async (p, opt) => {
   return d;
 };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// 只放行 http(s)：仓库的 homepage / README 里的链接都来自外部，
+// javascript: 与 data: 会变成可点击的 XSS。白名单之外一律返回空串（不渲染链接）。
+const safeUrl = (u) => {
+  const s = String(u ?? "").trim();
+  return /^https?:\/\//i.test(s) ? s : "";
+};
+// topics 在库里是字面量字符串，损坏或非数组时 JSON.parse 会抛错，
+// 一抛就把整块面板/整个版本列表打空。统一走这个安全解析。
+const parseTopics = (v) => {
+  try {
+    const a = JSON.parse(v || "[]");
+    return Array.isArray(a) ? a : [];
+  } catch {
+    return [];
+  }
+};
 const fmt = (n) => {
   n = Number(n || 0);
   if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
@@ -50,6 +66,7 @@ function renderSide() {
   $("#nAll").textContent = (st.counts?.starred || 0) + (st.counts?.fork || 0);
   $("#nStar").textContent = st.counts?.starred || 0;
   $("#nFork").textContent = st.counts?.fork || 0;
+  $("#nHide").textContent = st.counts?.hidden || 0;
   const tags = st.tags || [];
   state.tags = tags;
   $("#tagCount").textContent = tags.length ? `${tags.length}` : "";
@@ -123,15 +140,16 @@ async function loadRepos() {
 }
 
 /* ---------------- 抽屉 */
+let drawerSeq = 0;
 async function openRepo(id) {
   const r = await api(`/api/repo/${id}`);
   const tags = (r.tags || []).map((t) => t.name);
   const allTags = state.tags.map((t) => t.name);
-  const topics = JSON.parse(r.topics || "[]");
+  const topics = parseTopics(r.topics);
   $("#drawerContent").innerHTML = `
     <h2><a href="${esc(r.html_url)}" target="_blank" rel="noreferrer">${esc(r.full_name)}</a></h2>
     <div class="meta">⭐ ${fmt(r.stars)} · ⑂ ${fmt(r.forks)} · ${esc(r.language || "—")} · ${esc(r.license || "无协议")}
-      · 最后推送 ${ago(r.pushed_at)}${r.archived ? " · 已归档" : ""}${r.upstream ? ` · fork 自 <a href="https://github.com/${esc(r.upstream)}" target="_blank" rel="noreferrer">${esc(r.upstream)}</a>` : ""}${r.homepage ? ` · <a href="${esc(r.homepage)}" target="_blank" rel="noreferrer">主页</a>` : ""}</div>
+      · 最后推送 ${ago(r.pushed_at)}${r.archived ? " · 已归档" : ""}${r.upstream ? ` · fork 自 <a href="https://github.com/${esc(r.upstream)}" target="_blank" rel="noreferrer">${esc(r.upstream)}</a>` : ""}${safeUrl(r.homepage) ? ` · <a href="${esc(safeUrl(r.homepage))}" target="_blank" rel="noreferrer">主页</a>` : ""}</div>
     <div class="sec">
       <label>我的中文简介（保存后不会被自动规则覆盖）</label>
       <textarea id="digEdit">${esc(r.digest || "")}</textarea>
@@ -159,6 +177,7 @@ async function openRepo(id) {
       <button class="ghost" id="hideBtn">${r.hidden ? "恢复显示" : "隐藏该项目"}</button>
       <button class="ghost" id="starBtn">${r.source === "fork" ? "打开 Fork 源" : "去 GitHub 取消/加 Star"}</button>
     </div>`;
+  const mySeq = ++drawerSeq;
   $("#drawer").hidden = false;
 
   $("#digSave").onclick = async () => {
@@ -214,8 +233,11 @@ async function openRepo(id) {
   // README
   try {
     const md = await api(`/api/repo/${id}/readme`);
+    // 期间用户可能已切到别的仓库或关掉抽屉，迟到的响应不能覆盖当前面板
+    if (mySeq !== drawerSeq || $("#drawer").hidden) return;
     $("#readmeBox").innerHTML = md.markdown ? miniMarkdown(md.markdown) : "（该仓库没有 README，或已超出 200KB 截断）";
   } catch (e) {
+    if (mySeq !== drawerSeq || $("#drawer").hidden) return;
     $("#readmeBox").textContent = "README 读取失败：" + e.message;
   }
 }
@@ -271,7 +293,8 @@ function miniMarkdown(md) {
   s = s.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
   // 相对锚点链接 [#anchor] 与 [!badge] 之类图标语法：渲染成可点文本，避免裸露方括号
   s = s.replace(/\[([^\]]+)\]\(#([^)]*)\)/g, '<a class="mdlink" href="#$2">$1</a>');
-  s = s.replace(/\[!\[[^\]]*\]\([^)]*\)\]\(([^)]+)\)/g, '<a class="mdlink" href="$1" target="_blank" rel="noreferrer">查看</a>');
+  s = s.replace(/\[!\[[^\]]*\]\([^)]*\)\]\(([^)]+)\)/g, (m, u) =>
+    safeUrl(u) ? `<a class="mdlink" href="${esc(safeUrl(u))}" target="_blank" rel="noreferrer">查看</a>` : "查看");
   s = s.replace(/\[([^\]]{1,60})\]/g, (m, t) => (t.startsWith("!") ? m : `<span class="mdlink">${t}</span>`));
   s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/`([^`]+)`/g, "<code>$1</code>");
   s = s.replace(/^[-*+] (.*)$/gm, "<li>$1</li>").replace(/(<li>[\s\S]*?<\/li>)/g, "<ul>$1</ul>");
@@ -321,7 +344,7 @@ async function loadReleases(check) {
   const list = await api("/api/releases");
   $("#relList").innerHTML = list.length
     ? list.map((r) => {
-        const topics = JSON.parse(r.topics || "[]");
+        const topics = parseTopics(r.topics);
         return `<article class="card" data-id="${r.id}" data-ctx="repo">
           <div class="name"><a href="${esc(r.html_url)}" target="_blank" rel="noreferrer" data-stop>${esc(r.full_name)}</a>
             <span class="badge">${esc(r.tag || "")}</span></div>
@@ -424,7 +447,7 @@ $("#sort").addEventListener("change", async (e) => {
   state.sort = e.target.value;
   await loadRepos();
 });
-$("#refreshReadme").addEventListener("click", async () => {
+$("#resetFilters").addEventListener("click", async () => {
   state.q = ""; state.tag = ""; state.lang = ""; state.scope = "all";
   $("#q").value = "";
   document.querySelectorAll("[data-scope]").forEach((b) => b.classList.toggle("active", b.dataset.scope === "all"));

@@ -16,3 +16,14 @@ scripts/
 评估/
 .DS_Store
 *.log
+
+# 凭证一律不进镜像层
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.netrc
+.npmrc
+credentials.json
+auth.json
