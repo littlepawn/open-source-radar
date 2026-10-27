@@ -24,6 +24,7 @@ import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:
 import { ruleDigest } from "./lib/rules.mjs";
 import { pickKeyFiles, buildMessages, validateAiConfig, AI_PRESETS } from "./lib/ai.mjs";
 import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
+import { DISCOVER_DEFAULTS, DISCOVER_NOTE, buildDiscoverQuery } from "./lib/discover.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8788);
@@ -824,15 +825,10 @@ async function adoptRepo(id) {
 /* ---------------------------------------------------------------- 发现：热门开源项目 */
 const CN_BLOCK = /(色情|博彩|赌博|代刷|刷单|外挂辅助售卖)/;
 
-async function discover({ sort = "stars", q = "", days = 365, per_page = 30, page = 1 } = {}) {
-  let query = q.trim();
-  if (!query) {
-    const created = new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
-    query = `stars:>${sort === "stars" ? 2000 : 200} created:>${created}`;
-  }
-  if (!/\bfork:/.test(query)) query += " fork:false";
-  if (!/\barchived:/.test(query)) query += " archived:false";
-  const sortField = sort === "updated" ? "updated" : "stars";
+// 发现页默认阈值与查询构建都在 lib/discover.mjs：纯函数，可单测。
+// （拼 GitHub 搜索语法时一个负号就能把 query 玩坏，得靠测试守边界。）
+async function discover({ sort = "stars", q = "", stars, days, per_page = 30, page = 1 } = {}) {
+  const { query, sortField } = buildDiscoverQuery({ sort, q, stars, days });
   const data = await gh(`/search/repositories?q=${encodeURIComponent(query)}&sort=${sortField}&order=desc&per_page=${per_page}&page=${page}`);
   if (data.notFound) return { items: [], total: 0, query };
   const items = (data.items || []).filter((r) => {
@@ -1514,12 +1510,19 @@ const server = Bun.serve({
       }
 
       /* ---- 发现热门 ---- */
+      // 默认阈值下发：前端开机取一次，之后用户输入什么就传什么。
+      // 放在鉴权门内（和 /api/discover 同级），避免匿名探测。
+      if (p === "/api/discover/defaults") {
+        return json({ defaults: DISCOVER_DEFAULTS, note: DISCOVER_NOTE });
+      }
       if (p === "/api/discover") {
         const qp = Object.fromEntries(u.searchParams);
         const out = await discover({
           sort: qp.sort || "stars",
           q: qp.q || "",
-          days: Number(qp.days || 365),
+          // stars 不传时交给 discover 按榜单取默认，所以这里不要填 0
+          stars: qp.stars === undefined || qp.stars === "" ? undefined : Number(qp.stars),
+          days: qp.days === undefined || qp.days === "" ? undefined : Number(qp.days),
           page: Number(qp.page || 1),
           per_page: Math.min(50, Number(qp.per_page || 30)),
         });

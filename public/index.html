@@ -95,16 +95,21 @@
     <div id="viewDiscover" hidden>
       <div class="discoverbar">
         <select id="dSort">
-          <option value="stars">总 Star 榜 · &gt;2000★</option>
-          <option value="updated">最近活跃 · &gt;200★</option>
+          <option value="stars">总 Star 榜</option>
+          <option value="updated">最近活跃</option>
         </select>
-        <select id="dDays">
-          <option value="90">近 3 个月新建</option>
-          <option value="365" selected>近 1 年新建</option>
-          <option value="1825">近 5 年新建</option>
-        </select>
-        <input id="dQ" placeholder="自定义搜索语法，如 topic:homelab stars:&gt;1000（留空用推荐条件）" />
+        <label class="dnum" title="只要 Star 数超过这个值的仓库">
+          <span>Star &gt;</span>
+          <input id="dStars" type="number" min="0" step="100" inputmode="numeric" />
+        </label>
+        <label class="dnum" title="只要在这个天数内新建的仓库">
+          <span>近</span>
+          <input id="dDays" type="number" min="1" max="3650" step="1" inputmode="numeric" />
+          <span>天新建</span>
+        </label>
+        <input id="dQ" placeholder="自定义搜索语法，如 topic:homelab stars:&gt;1000（留空用上面的条件）" />
         <button id="dGo" class="primary">搜索</button>
+        <button id="dReset" class="ghost" title="恢复默认阈值">恢复默认</button>
       </div>
       <div id="dResult" class="cards"></div>
     </div>

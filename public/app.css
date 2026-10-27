@@ -255,6 +255,25 @@ a.link { color: var(--accent-2); }
    #staleBar 就靠 hidden 属性控制显隐，不补这条等于永远看得见。 */
 .discoverbar[hidden] { display: none !important; }
 .discoverbar input { flex: 1; min-width: 240px; }
+/* 阈值输入框：label 包住「Star > [输入]」这种带单位的结构，
+   拆成独立 input 就没法表达「单位在数字后面」。flex:0 0 auto 让它按内容宽度站住，
+   不要像 #dQ 那样被 flex:1 拉满。 */
+.discoverbar .dnum {
+  display: flex; align-items: center; gap: 6px; flex: 0 0 auto;
+  font-size: 12.5px; color: var(--text-dim);
+  background: var(--bg-soft); border: 1px solid var(--line);
+  border-radius: 9px; padding: 0 10px;
+}
+.discoverbar .dnum input {
+  flex: 0 0 auto; min-width: 0; width: 76px;
+  border: 0; background: none; padding: 8px 0;
+  color: var(--text); font: inherit; font-size: 12.5px;
+}
+.discoverbar .dnum input:focus { outline: none; }
+.discoverbar .dnum:focus-within { border-color: var(--accent); }
+/* 数字框去掉上下箭头：这两个框宽度紧张，箭头占地方还容易被误触 */
+.discoverbar .dnum input::-webkit-outer-spin-button,
+.discoverbar .dnum input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 
 .toast {
   position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%);

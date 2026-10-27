@@ -505,22 +505,54 @@ function miniMarkdown(md, base) {
   return `<pre>${esc(String(md || "")).slice(0, 200000)}</pre>`;
 }
 
-// 自定义查询框非空时，下拉（排序/时间窗）完全不参与查询构建，
-// 但下拉仍原样显示，用户会以为是「最近活跃 · >200★ + 近1年新建」在生效。
+// 自定义查询框非空时，上面的 Star/天数输入框完全不参与查询构建，
+// 但输入框仍原样显示，用户会以为「Star>2000 + 近365天」在生效。
 // 所以把真实生效条件分开写清楚。
-const DISCOVER_STARS = { stars: ">2000", updated: ">200" };
+//
+// 阈值本身不写死：开机向 /api/discover/defaults 取一次（见 loadDiscoverDefaults）。
+// 分榜默认值不同是有道理的——总 Star 榜门槛该高，最近活跃榜看的是近期还被推，
+// 200 星就够有意义。
+let DISCOVER_DEFAULTS = { stars: { stars: 2000, days: 365 }, updated: { stars: 200, days: 90 } };
+let discoverDefaultsLoaded = false;
+
+function discoverSortKey() {
+  return $("#dSort").value === "updated" ? "updated" : "stars";
+}
+
+// 只在「用户还没动过输入框」时填默认值，避免把用户改过的数字冲掉。
+function applyDiscoverDefaults(force) {
+  const def = DISCOVER_DEFAULTS[discoverSortKey()] || DISCOVER_DEFAULTS.stars;
+  if (force || !$("#dStars").value) $("#dStars").value = def.stars;
+  if (force || !$("#dDays").value) $("#dDays").value = def.days;
+}
+
+async function loadDiscoverDefaults() {
+  if (discoverDefaultsLoaded) return;
+  try {
+    const d = await api("/api/discover/defaults");
+    if (d.defaults) DISCOVER_DEFAULTS = d.defaults;
+    if (d.note) $("#dReset").title = d.note + "（恢复默认阈值）";
+    discoverDefaultsLoaded = true;
+  } catch {
+    // 拿不到就用代码里这份兜底，不阻塞首屏
+  }
+  applyDiscoverDefaults(true);
+}
+
 function discoverConditionNote() {
-  if ($("#dQ").value.trim()) return "自定义语法（两个下拉不参与）";
-  const s = $("#dSort").value;
-  const d = $("#dDays").value;
-  const win = { 90: "近 3 个月", 365: "近 1 年", 1825: "近 5 年" }[d] || `近 ${d} 天`;
-  return `${s === "stars" ? "总 Star 榜" : "最近活跃"} · Star ${DISCOVER_STARS[s] || ""} · ${win}内新建`;
+  if ($("#dQ").value.trim()) return "自定义语法（上面的 Star / 天数不参与）";
+  const s = discoverSortKey();
+  const stars = $("#dStars").value || 0;
+  const days = $("#dDays").value || 0;
+  return `${s === "stars" ? "总 Star 榜" : "最近活跃"} · Star > ${stars} · 近 ${days} 天新建`;
 }
 
 async function loadDiscover() {
+  await loadDiscoverDefaults();
   const q = new URLSearchParams({
-    sort: $("#dSort").value,
-    days: $("#dDays").value,
+    sort: discoverSortKey(),
+    stars: $("#dStars").value.trim(),
+    days: $("#dDays").value.trim(),
     q: $("#dQ").value.trim(),
   });
   $("#dResult").innerHTML = `<div class="empty">搜索中…</div>`;
@@ -774,8 +806,19 @@ $("#resetFilters").addEventListener("click", async () => {
   await refresh();
 });
 $("#dGo").addEventListener("click", loadDiscover);
-$("#dSort").addEventListener("change", loadDiscover);
-$("#dDays").addEventListener("change", loadDiscover);
+// 换榜单时把该榜的默认阈值填回去——但只在用户没手动改过时（见 applyDiscoverDefaults）
+$("#dSort").addEventListener("change", () => { applyDiscoverDefaults(false); loadDiscover(); });
+// 数字框改完回车即搜，和点「搜索」等价；不监听 input，免得打一半就发请求
+for (const id of ["#dStars", "#dDays"]) {
+  $(id).addEventListener("keydown", (e) => {
+    if (e.key === "Enter") loadDiscover();
+  });
+  $(id).addEventListener("change", loadDiscover);
+}
+$("#dReset").addEventListener("click", () => {
+  applyDiscoverDefaults(true);
+  loadDiscover();
+});
 $("#relGo").addEventListener("click", () => loadReleases(true));
 $("#cleanupGo").addEventListener("click", () => loadCleanup(true));
 $("#staleForkGo").addEventListener("click", async () => {
