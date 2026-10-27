@@ -18,7 +18,8 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-}
       TZ: Asia/Shanghai
     healthcheck:
-      test: ["CMD-SHELL", "wget -qS -O /dev/null 'http://127.0.0.1:8788/login' 2>&1 | grep -q 200 || exit 1"]
+      # 用 wget 退出码判断，不匹配响应正文里的 "200"（Content-Length 也会命中）
+      test: ["CMD-SHELL", "wget -q -O /dev/null 'http://127.0.0.1:8788/login' || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
