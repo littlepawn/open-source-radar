@@ -125,13 +125,23 @@ describe("buildMessages", () => {
 });
 
 describe("AI_PRESETS", () => {
-  test("每个预设都有 id / label / base，拼地址不靠猜", () => {
+  test("每个预设都有 id / label / base_url，拼地址不靠猜", () => {
     expect(AI_PRESETS.length).toBeGreaterThanOrEqual(5);
     for (const p of AI_PRESETS) {
       expect(typeof p.id).toBe("string");
       expect(typeof p.label).toBe("string");
-      // custom 是给中转站留的空位，base 允许为空；其余必须是 http(s)
+      // custom 是给中转站留的空位，base_url 允许为空；其余必须是 http(s)
       if (p.id !== "custom") expect(/^https?:\/\//.test(p.base_url)).toBe(true);
+    }
+  });
+  test("预设字段名必须和配置接口一致（曾因写成 base 导致选预设填不进地址）", () => {
+    for (const p of AI_PRESETS) {
+      expect(p).toHaveProperty("base_url");
+      expect(p).not.toHaveProperty("base");
+      // 预设直接喂给 validateAiConfig 应当通过（custom 除外，它本就留空）
+      if (p.id !== "custom") {
+        expect(validateAiConfig({ base_url: p.base_url, model: p.model, max_tokens: 2000, temperature: 0.2 })).toEqual([]);
+      }
     }
   });
   test("custom 预设留空，让用户填自己的中转地址", () => {

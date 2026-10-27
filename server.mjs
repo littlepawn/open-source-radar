@@ -1312,6 +1312,9 @@ const server = Bun.serve({
             stars: byId.get(c.id)?.stars,
             pushed_at: byId.get(c.id)?.pushed_at,
             language: byId.get(c.id)?.language,
+            digest: byId.get(c.id)?.digest,
+            description: byId.get(c.id)?.description,
+            archived: byId.get(c.id)?.archived,
           })),
           total: rows.length,
         });

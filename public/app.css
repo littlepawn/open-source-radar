@@ -251,6 +251,9 @@ a.link { color: var(--accent-2); }
 
 /* ---------------- 发现 / 版本 */
 .discoverbar { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
+/* .discoverbar 自带 display:flex，会盖掉 UA 的 [hidden]{display:none}。
+   #staleBar 就靠 hidden 属性控制显隐，不补这条等于永远看得见。 */
+.discoverbar[hidden] { display: none !important; }
 .discoverbar input { flex: 1; min-width: 240px; }
 
 .toast {

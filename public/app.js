@@ -542,7 +542,9 @@ async function loadCleanup(run) {
       ? d.items.map((c) => `<article class="card" data-id="${c.id}" data-ctx="repo">
           <div class="name"><a href="${esc(c.html_url || "#")}" target="_blank" rel="noreferrer" data-stop>${esc(c.full_name || c.id)}</a>
             ${c.language ? `<span class="badge">${esc(c.language)}</span>` : ""}
+            ${c.archived ? '<span class="badge arch">归档</span>' : ""}
             <span class="badge warn">${(c.signals || []).length} 条信号</span></div>
+          ${c.digest ? `<div class="digest">${esc(c.digest.split("\n")[0])}</div>` : `<div class="desc">${esc(c.description || "（无描述）")}</div>`}
           <div class="desc">${esc((c.signals || []).join(" · ") || "—")}</div>
           <div class="foot"><span>★ ${fmt(c.stars)}</span><span class="lang">${esc(c.language || "—")}</span>
             <span>最后推送 ${ago(c.pushed_at)}</span><span class="sp"></span>
@@ -638,6 +640,8 @@ document.addEventListener("click", async (e) => {
     state.view = navView.dataset.view;
     // 进独立面板前把列表过滤器清掉，回来时才不会带着上次的 view 参数
     state.filter = "";
+    // 抽屉里也有 data-view（比如「去配 AI」），不关抽屉的话新面板被盖在下面
+    $("#drawer").hidden = true;
     document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
     showView(state.view);
     document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b === navView));
