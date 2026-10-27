@@ -1,0 +1,18 @@
+# 构建产物与本地数据不进镜像
+node_modules/
+data/
+*.db
+*.db-wal
+*.db-shm
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+docker-compose.yml
+README.md
+AGENTS.md
+start.sh
+scripts/
+评估/
+.DS_Store
+*.log
