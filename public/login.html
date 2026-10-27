@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>登录 · 开源雷达</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body class="auth-body">
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <span class="logo">◎</span>
+      <div>
+        <b>开源雷达</b>
+        <small>我的 GitHub 收藏看板</small>
+      </div>
+    </div>
+
+    <h1>用 GitHub token 进入</h1>
+    <p class="auth-lead">
+      这个看板会读取你 star 和 fork 的仓库，并按你的喜好分类整理。
+      需要一个有 <code>public_repo</code> 权限的 Personal Access Token。
+    </p>
+
+    <form id="loginForm" autocomplete="off">
+      <label for="token">GitHub Token</label>
+      <div class="tokenfield">
+        <input id="token" type="password" placeholder="ghp_… 或 github_pat_…" spellcheck="false" autocomplete="new-password" />
+        <button type="button" id="toggleToken" class="eye" title="显示/隐藏">👁</button>
+      </div>
+      <div class="auth-hint" id="hint"></div>
+      <button type="submit" class="primary auth-submit" id="submitBtn">验证并进入</button>
+    </form>
+
+    <details class="auth-help">
+      <summary>怎么拿 token？</summary>
+      <ol>
+        <li>打开 <a href="https://github.com/settings/tokens" target="_blank" rel="noreferrer">github.com/settings/tokens</a></li>
+        <li>Generate new token → <b>classic</b></li>
+        <li>勾选 <code>public_repo</code>（想收藏私有仓库再加 <code>repo</code>）</li>
+        <li>生成后复制，粘到上面</li>
+      </ol>
+      <p class="auth-note">
+        token 会用 AES-256-GCM 加密后存进本地 SQLite，不会出现在日志里，也不会发往除 GitHub 以外的任何地方。
+      </p>
+    </details>
+  </div>
+
+  <footer class="auth-foot">本地运行 · 数据只存在你的机器上</footer>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+<script src="/login.js"></script>
+</body>
+</html>

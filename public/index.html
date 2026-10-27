@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>开源雷达 · 我的 GitHub 收藏看板</title>
+<link rel="stylesheet" href="/app.css" />
+</head>
+<body>
+<div id="app">
+  <aside class="side">
+    <div class="brand">
+      <span class="logo">◎</span>
+      <div>
+        <b>开源雷达</b>
+        <small id="whoami">本地 · 未同步</small>
+      </div>
+      <button id="themeBtn" class="icon" type="button" aria-label="切换明暗主题" title="切换主题">◐</button>
+    </div>
+
+    <nav class="nav">
+      <button class="navitem active" data-scope="all"><i>▦</i>全部 <em id="nAll">0</em></button>
+      <button class="navitem" data-scope="starred"><i>★</i>我 Star 的 <em id="nStar">0</em></button>
+      <button class="navitem" data-scope="fork"><i>⑂</i>我的 Fork <em id="nFork">0</em></button>
+      <button class="navitem" data-scope="hidden"><i>◌</i>已隐藏 <em id="nHide">0</em></button>
+      <button class="navitem" data-view="discover"><i>✦</i>发现热门</button>
+      <button class="navitem" data-view="releases"><i>⬆</i>新版本</button>
+    </nav>
+
+    <div class="sideblock">
+      <div class="sidehead">标签<span id="tagCount"></span>
+        <button id="newTagBtn" class="icon tagplus" type="button" aria-label="新建标签" title="新建标签">＋</button></div>
+      <div id="tagList" class="taglist"></div>
+    </div>
+
+    <div class="sideblock">
+      <div class="sidehead">语言</div>
+      <div id="langList" class="taglist"></div>
+    </div>
+
+    <div class="sidefoot">
+      <button id="syncBtn" class="primary">同步 GitHub</button>
+      <button id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
+      <div class="minihint" id="syncHint">未同步</div>
+      <div class="userbox" id="userbox" hidden>
+        <img id="userAvatar" alt="" />
+        <span id="userLogin"></span>
+        <button class="out" id="logoutBtn">退出</button>
+      </div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <input id="q" type="search" placeholder="搜索仓库名 / 描述 / 中文简介 / topics…" autocomplete="off" />
+      <select id="sort">
+        <option value="stars">按 Star 数</option>
+        <option value="pushed">按最近更新</option>
+        <option value="starred">按收藏时间</option>
+        <option value="name">按名称</option>
+      </select>
+      <button id="resetFilters" class="ghost" title="清除筛选">重置筛选</button>
+    </header>
+
+    <div id="viewRepos">
+      <div class="crumb" id="crumb"></div>
+      <div id="cards" class="cards"></div>
+      <div id="empty" class="empty" hidden>没有匹配结果。先点左下角「同步 GitHub」，或换个关键词。</div>
+    </div>
+
+    <div id="viewDiscover" hidden>
+      <div class="discoverbar">
+        <select id="dSort">
+          <option value="stars">总 Star 榜</option>
+          <option value="updated">最近活跃</option>
+        </select>
+        <select id="dDays">
+          <option value="90">近 3 个月新建</option>
+          <option value="365" selected>近 1 年新建</option>
+          <option value="1825">近 5 年新建</option>
+        </select>
+        <input id="dQ" placeholder="自定义搜索语法，如 topic:homelab stars:&gt;1000（留空用推荐条件）" />
+        <button id="dGo" class="primary">搜索</button>
+      </div>
+      <div id="dResult" class="cards"></div>
+    </div>
+
+    <div id="viewReleases" hidden>
+      <div class="discoverbar">
+        <button id="relGo" class="primary">检查前 25 个项目的更新</button>
+        <span class="minihint" id="relHint"></span>
+      </div>
+      <div id="relList" class="cards"></div>
+    </div>
+  </main>
+
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawerbody">
+      <button id="drawerClose" class="icon drawerx" type="button" aria-label="关闭详情" title="关闭">✕</button>
+      <div id="drawerContent"></div>
+    </div>
+  </div>
+  <div id="toast" class="toast" hidden></div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
