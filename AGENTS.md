@@ -24,7 +24,12 @@ GitHub 收藏（star + fork）本地看板。上位约定见 `../AGENTS.md`。
 - **匿名 GitHub 只有 60 次/小时**：第一次全量同步必须带 token。
 - **`Accept: application/vnd.github.star+json` 在没有 user scope 时会 401**，别以为接口挂了。
 - **`[hidden]` 会被 `display:flex` 覆盖**：抽屉用 `hidden` 属性控制显隐，CSS 里必须补 `.drawer[hidden]{display:none!important}`。
-- **标签规则要按具体度排序**：`log`、`test`、`reverse` 这类短词会大面积误判。收紧成 `alertmanager`、`\be2e\b`、`decompil` 之类。
+- **标签规则的短词必须加边界**：裸子串会大面积误判，实测踩过的坑——`orm` 命中 platf**orm**、`rag` 命中 d**rag**on/sto**rag**e、`word\b` 命中 pass**word**、`sing` 命中 u**sing**、`ide\b` 命中 prov**ide**、`bt\b` 命中 d**bt**、`cd\b` 命中 sh.**cd**、`flux` 命中 **Flux**Down、`ocr` 命中 mo**creak**、`av\b` 命中 lib**av**、`hack` 命中 **hack**toberfest、`frida` 命中 **Fri**day、`ui\b` 命中 x-**ui**/3x-**ui**、`剪` 命中**剪**贴板、`deploy` 命中 mocreak 的「installs and **deploys**」。写规则时一律用 `\bxxx\b`，中文多字词（剪辑/剪映/免root）才可裸写。
+- **`android` 单独出现不代表逆向**：tldr-pages、scrcpy、rustdesk 都只因「支持安卓」被误判成「安卓逆向」（曾 28 条）。现在要求 `android` 与 `逆向|magisk|xposed|frida|脱壳|hook|root` 同现，或直接命中 `magisk/xposed/frida/刷机/免root`。
+- **`ui` 需要后视断言**：`\bui\b` 仍会把 `x-ui`、`3x-ui` 判成前端项目（`-` 是词边界）。写法 `(?<![a-z0-9-])ui\b(?![-.])`。Python 的 `re` 不支持变长后视，`import_mcp_cache.py` 里同一规则照抄这条没问题（固定宽度 1 字符）。
+- **规则表有三份必须同步**：`server.mjs` 的 `RULES`（服务端权威）、`scripts/import_mcp_cache.py` 的 `TAGS`（离线导入）、`public/app.js` 的 `rulePreview` 里的 `R`（抽屉「用规则重算」按钮）。改一处必须改三处，否则前端预览与服务端结果不一致。
+- **改规则后必须全库重算**：一次性脚本从 `server.mjs` 里 `new Function` 抽出 `RULES` + `ruleDigest`（抽取范围到 `/* ---- 入库 ---- */` 注释为止，**不能包含 `const fmt =`**，否则 `ReferenceError: fmt is not defined`），清 `repo_tags WHERE source='auto'` 后重写（manual 一律保留），再对 `digest_src` 为 null/rule 的行重写简介。
+- **审计手段**：跑一遍全库，只打印「命中串长度 ≤ 4」的可疑项及上下文，人工过一遍。当前 228 条库残留 85 条短词命中，逐条确认后全是正常短词（`cli`、`vue`、`pdf`、`game`、`llm` 等真正相关的项目）。
 - **`python3` 用 urllib 打 GitHub 会 SSL 证书失败**（本机 Python 3.10 缺 CA），改用 `~/.bun/bin/bun -e` 发请求。
 - **滚动条必须主题化**：全局 `::-webkit-scrollbar` 细窄透明边 + `scrollbar-color`，配色走 `--sb-thumb` 变量；侧栏用 `scrollbar-gutter: stable` 防抖动。
 - **README 相对锚点 `[#xxx]` 与 badge 语法**会原样裸露方括号，`miniMarkdown` 已补 `(#...)` 和 `[![](...)](...)` 两条替换。
