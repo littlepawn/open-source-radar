@@ -22,6 +22,39 @@
     return /^https?:\/\//i.test(s) ? s : "";
   };
 
+  // data: 图片只放行位图格式，明确排除 svg+xml——SVG 是 XML，能带脚本，
+  // 主流 sanitizer 都把它排除在外。CSP 的 img-src 显式放行 data:，拦不住它。
+  const SAFE_DATA_IMG = /^data:image\/(?:png|jpe?g|gif|webp|avif|bmp|ico);base64,/i;
+
+  // srcset 的候选按「描述符边界」切，而不是按逗号：
+  //   "./a.png 1x, ./b.png 2x"      → 两个候选
+  //   "data:image/svg+xml,<svg a=1,b=2>, x.png 2x" → 内部逗号不能被当成分隔符
+  // 描述符只允许 1x / 2.5x / 480w 这类，逗号必须紧跟描述符之后（或后面是另一个描述符）。
+  function splitSrcset(val) {
+    const s0 = String(val ?? "");
+    // 不含 data: 时逗号就是安全分隔符（普通 URL 里几乎不含逗号），直接切最稳。
+    // 只有出现 data: 才走下面的描述符扫描，因为 data:image/svg+xml,<svg a=1,b=2>
+    // 内部的逗号是内容，不是分隔。
+    if (!/data:/i.test(s0)) return s0.split(",");
+    const out = [];
+    let cur = "", i = 0;
+    while (i < s0.length) {
+      const ch = s0[i];
+      if (ch === ",") {
+        // 只有当「已积累的内容以描述符结尾」或「后面紧跟一个描述符」时，逗号才是分隔符。
+        // 描述符形如 <数字>x 或 <数字>w。
+        const before = /\s+\d+(?:\.\d+)?[xw]\s*$/i.test(cur);
+        const rest = s0.slice(i + 1);
+        const after = /^\s*(?:[^,\s]+\s+)?\d+(?:\.\d+)?[xw](?:\s*,|$)/i.test(rest);
+        if (before || after) { out.push(cur); cur = ""; i++; continue; }
+      }
+      cur += ch;
+      i++;
+    }
+    out.push(cur);
+    return out;
+  }
+
   // README 来自外部仓库，放行的 HTML 标签与属性都做白名单。
   const MD_VOID = new Set(["img", "br", "hr", "input", "wbr", "col"]);
   const MD_BLOCK = new Set([
@@ -61,20 +94,22 @@
         if (!/^https?:\/\//i.test(val) && !val.startsWith("#")) continue;
       }
       if (name === "src") {
-        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val) && !/^https?:\/\//i.test(val) && !/^data:image\//i.test(val)) continue;
-        if (/^https?:\/\//i.test(val) || /^data:image\//i.test(val)) { /* 原样放行 */ }
+        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val) && !/^https?:\/\//i.test(val) && !SAFE_DATA_IMG.test(val)) continue;
+        if (/^https?:\/\//i.test(val) || SAFE_DATA_IMG.test(val)) { /* 原样放行 */ }
         else if (base) val = cdn(base, val);
         else continue; // 没有 base 就丢弃，避免破图标
       }
       if (name === "srcset") {
-        // srcset 是「url 描述符, url 描述符」，逐个 URL 单独改写相对路径
-        const fixed = String(val).split(",").map((part) => {
+        // srcset 是「url 描述符, url 描述符」，逐个 URL 单独改写相对路径。
+        // 不能直接 split(",")：data:image/svg+xml,<svg a=1,b=2> 内部合法地含逗号，
+        // 按逗号切会把一个 URL 拆成三段不存在的 CDN 地址。按描述符边界切才对。
+        const fixed = splitSrcset(val).map((part) => {
           const seg = part.trim();
           if (!seg) return "";
           const [u, ...desc] = seg.split(/\s+/);
           let nu = u;
-          if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) return "";
-          if (!/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) {
+          if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !/^https?:\/\//i.test(u) && !SAFE_DATA_IMG.test(u)) return "";
+          if (!/^https?:\/\//i.test(u) && !SAFE_DATA_IMG.test(u)) {
             if (!base) return "";
             nu = cdn(base, u);
           }
@@ -129,7 +164,7 @@
       // URL 里允许一层括号，否则 alert(1) 这类内容会把 ) 留在外面
       const URL_RE = "([^()\\s]*(?:\\([^()\\s]*\\)[^()\\s]*)*)";
       t = t.replace(new RegExp("!\\[([^\\]]*)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, alt, src2) => {
-        if (!/^https?:\/\//i.test(src2) && !/^data:image\//i.test(src2)) {
+        if (!/^https?:\/\//i.test(src2) && !SAFE_DATA_IMG.test(src2)) {
           if (!base) return "";
           src2 = cdn(base, src2);
         }

@@ -392,6 +392,10 @@ function parseCookies(req) {
   return out;
 }
 function newSession(login) {
+  // 会话只增不删：sessionInfo 只在「这个 sid 又被访问到且已过期」时才删，
+  // 再也没人带着它访问的过期 sid 会永久留在表里，TTL 形同虚设。
+  // 顺手把同一用户此前登录留下的旧 sid 清掉——否则每次登录都多一条有效会话。
+  db.query("DELETE FROM sessions WHERE exp < ? OR login = ?").run(Date.now(), login);
   const sid = randomBytes(24).toString("hex");
   const at = Date.now();
   db.query("INSERT INTO sessions (sid,login,at,exp) VALUES (?,?,?,?)").run(sid, login, at, at + SESSION_TTL_MS);
@@ -424,6 +428,10 @@ function isAuthed(req) {
 
 // 启动时把库里加密保存的 token 解出来常驻内存
 runtimeToken = loadStoredToken();
+
+// 顺手清掉过期会话。sessionInfo 只在「某个 sid 又被带着访问且已过期」时才删它，
+// 再没人用的过期 sid 会永久留在表里，TTL 形同虚设。
+db.query("DELETE FROM sessions WHERE exp < ?").run(Date.now());
 
 
 /* ---------------------------------------------------------------- GitHub 客户端 */
@@ -557,10 +565,12 @@ async function paged(path, onPage, { maxPages = 50, perPage = 100, accept } = {}
 
 /* ---------------------------------------------------------------- 中文简介规则引擎 */
 // 规则表与 ruleDigest 抽到 lib/rules.mjs（纯函数，可被 bun test 直接 import）。
-// 三份规则表的同步约束见 AGENTS.md：本文件唯一定义在 lib/rules.mjs，
-// scripts/import_mcp_cache.py 的 TAGS 与 public/app.js 的 rulePreview 仍需人工对齐。
-
-const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n ?? 0));
+// 三份规则表的同步约束见 AGENTS.md。现在唯一权威是 lib/rules.mjs：
+//   - public/rules.js 由 scripts/gen-rules.mjs 从它生成（前端预览用同一份）
+//   - scripts/rules.json 同样由该脚本产出（import_mcp_cache.py 读它）
+//   - tests/rules-sync.test.mjs 断言三处没有漂移，改规则忘同步会直接红。
+// 这里曾经还留着一份 fmt（没有调用点，且缺 1e6→M 分档与 Number.isFinite 兜底），
+// 删掉：需要格式化星数就 import { fmt } from "./lib/rules.mjs"。
 
 /* ---------------------------------------------------------------- 入库 */
 // 注意：branch 用 COALESCE(NULLIF(...)) —— 同步这趟可能没带 default_branch
@@ -706,6 +716,7 @@ const listeners = new Set();
 function broadcast(obj) {
   db.query("DELETE FROM events WHERE id <= (SELECT MAX(id)-2000 FROM events)").run();
   for (const fn of listeners) {
+    // 吞掉单个监听器的异常，别让一个坏流打断整轮广播
     try { fn(obj); } catch {}
   }
 }
@@ -1036,7 +1047,7 @@ const PAGE_ALIAS = { "/login": "login.html", "/themes": "themes.html" };
 const ASSET_FILES = new Set([
   "login.html", "login.js",
   "themes.html", "themes.css", "themes.js",
-  "app.css", "app.js", "md.js", "ai.js", "favicon.ico",
+  "app.css", "app.js", "md.js", "rules.js", "ai.js", "favicon.ico",
 ]);
 
 const json = (obj, status = 200) =>
@@ -1093,6 +1104,10 @@ function repoWhere({ q = "", source = "", tag = "", lang = "", scope = "all", vi
   // 「已隐藏」是用户主动的操作，它的语义是「我隐藏了哪些」——不该被 detached 再过滤一遍，
   // 否则一个既隐藏、上游又取消了的仓库会两个入口都看不到，等于凭空消失。
   // 反过来「已取消」排掉 hidden，因为那些在「已隐藏」里已经看得到了，不重复出现。
+  // 「已放弃」也是用户主动的操作，和「已隐藏」同理：dropped+detached、dropped+hidden
+  // 这两种组合如果两边各过滤一次，记录会在所有视图里都取不到——点了放弃就再也找不回来。
+  // 判据：任一用户主动视图（hidden / detached / dropped）下，不再叠加别的标志位过滤。
+  const viewDropped = view === "dropped";
   if (!wantHidden) {
     where.push(wantDetached ? "COALESCE(r.detached,0) = 1" : "COALESCE(r.detached,0) = 0");
   }
@@ -1103,8 +1118,17 @@ function repoWhere({ q = "", source = "", tag = "", lang = "", scope = "all", vi
     where.push("r.source != 'discover'");
   }
   // 视图过滤：待读 / 已放弃 / 停滞。三个都是 r 表上的标志位或时间，不需要额外 join。
-  if (view === "toread") where.push("r.toread = 1 AND r.dropped = 0");
-  else if (view === "dropped") where.push("r.dropped = 1");
+  // 待读同理：标了待读、上游又取消 star 的仓库，在「待读队列」里必须还能找到，
+  // 否则用户既想看又看不到。所以 view=toread 时把上面的 detached 谓词撤掉。
+  if (view === "toread") {
+    const i = where.findIndex((w) => w.includes("r.detached"));
+    if (i >= 0) where.splice(i, 1);
+    where.push("r.toread = 1 AND r.dropped = 0");
+  } else if (view === "dropped") {
+    const i = where.findIndex((w) => w.includes("r.detached"));
+    if (i >= 0) where.splice(i, 1);
+    where.push("r.dropped = 1");
+  }
   else if (view === "stale") {
     // 归档或 180 天没推送。和 lib/insight.mjs 的 stagnation() 用同一判据，
     // 服务端用 SQL 是为了能在库内直接过滤 228 条，不必全拉回内存。
@@ -1112,8 +1136,10 @@ function repoWhere({ q = "", source = "", tag = "", lang = "", scope = "all", vi
     // 这边漏了会出现「侧栏写 12、点进去 15 个」。
     where.push("COALESCE(r.dropped,0) = 0 AND (r.archived = 1 OR (r.pushed_at IS NOT NULL AND r.pushed_at != '' AND r.pushed_at < ?))");
     args.push(new Date(Date.now() - 180 * 86400000).toISOString());
-  } else {
-    // 其他视图默认不显示已放弃的（它们只在「已放弃」里出现）
+  } else if (!wantHidden) {
+    // 其他视图默认不显示已放弃的（它们只在「已放弃」里出现）。
+    // 但「已隐藏」视图不能叠这条：既隐藏又放弃的仓库会两个入口都取不到，
+    // 用户点完放弃就再也找不到它、也就无法恢复。
     where.push("COALESCE(r.dropped,0) = 0");
   }
   if (lang) { where.push("r.language = ?"); args.push(lang); }
@@ -1256,7 +1282,12 @@ const server = Bun.serve({
       const stream = new ReadableStream({
         start(ctrl) {
           const enc = new TextEncoder();
-          const send = (o) => { if (!closed) { try { ctrl.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`)); } catch {} } };
+          // enqueue 失败就把这条流判死：否则 20s 一次的 ping 会继续往已断的流里写，
+          // 一直抛到 abort 到达才停（不会真泄漏，但中间这段时间在无声重试）。
+          const send = (o) => {
+            if (closed) return;
+            try { ctrl.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`)); } catch { closed = true; }
+          };
           send({ type: "hello", ...syncState });
           listeners.add(send);
           const ping = setInterval(() => send({ type: "ping", at: now() }), 20000);
@@ -1296,13 +1327,13 @@ const server = Bun.serve({
           starred: cnt({ scope: "all", source: "starred" }),
           fork: cnt({ scope: "all", source: "fork" }),
           discover: cnt({ scope: "all", source: "discover" }),
-          // 「已隐藏」不是 scope 过滤能算出来的（hidden 表是单独的），单独数
-          // hidden 按 hidden 表数全量：既隐藏又取消的也要算进去，不然用户找不到它
-          hidden: db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0,
+          // 「已隐藏」走 repoWhere，和点进去的列表同源。早先直接 COUNT(hidden) 全表，
+          // 把 dropped 的、以及仓库已被清掉的孤儿行都数进去，实测侧栏写 3、列表只有 1 条。
+          // 注意不能加 view="dropped"：那就是「既隐藏又放弃」的子集，不是「我隐藏了哪些」。
+          hidden: cnt({ scope: "hidden" }),
           // 已取消：上游同步里消失的。默认视图已排除，这里单独给个数让用户能翻回去看。
-          // 排除已隐藏的（那部分在「已隐藏」里已经能看到），两边不重复计数。
-          detached: db.query(`SELECT COUNT(*) n FROM repos r
-            WHERE COALESCE(r.detached,0)=1 AND r.id NOT IN (SELECT repo_id FROM hidden)`).get()?.n || 0,
+          // 同样走 repoWhere —— 手写 SQL 会漏掉 dropped 条件，又是「侧栏 3、列表 2」。
+          detached: cnt({ scope: "detached" }),
           toread: cnt({ scope: "all", view: "toread" }),
           dropped: cnt({ scope: "all", view: "dropped" }),
           stale: cnt({ scope: "all", view: "stale" }),
@@ -1311,13 +1342,14 @@ const server = Bun.serve({
         // 语言这里原来漏了 source!='discover'（收编进库的临时仓库不该进主列表计数）
         // 和 dropped=0（已放弃的也不在主列表里）。
         // 标签计数同样过滤掉 discover / dropped / hidden，理由见下方 langs
-        const tags = db.query(`
-          SELECT t.id, t.name, t.kind, t.color, t.parent, COUNT(v.id) n
-          FROM tags t
-          LEFT JOIN repo_tags rt ON rt.tag_id=t.id
-          LEFT JOIN repos v ON v.id=rt.repo_id AND COALESCE(v.dropped,0)=0 AND v.source!='discover'
-            AND COALESCE(v.detached,0)=0 AND v.id NOT IN (SELECT repo_id FROM hidden)
-          GROUP BY t.id ORDER BY COALESCE(t.parent,''), n DESC, t.name`).all();
+        // 标签计数必须和「点进去看到的列表」同源。列表侧点父标签会带出子标签下的仓库
+        // （t.name=? OR t.parent=?），这里只按 rt.tag_id=t.id 数就会少算——
+        // 实测父标签 AI 侧栏写 1、点进去 2 条。改成对每个标签跑一次 cnt({tag})。
+        const tagMeta = db.query("SELECT id, name, kind, color, parent FROM tags ORDER BY COALESCE(parent,''), name").all();
+        const tagN = new Map();
+        for (const t of tagMeta) tagN.set(t.id, cnt({ scope: "all", tag: t.name }));
+        const tags = tagMeta.map((t) => ({ ...t, n: tagN.get(t.id) || 0 }))
+          .sort((a, b) => (a.parent || "").localeCompare(b.parent || "") || b.n - a.n || a.name.localeCompare(b.name));
         const langs = db.query(`
           SELECT language, COUNT(*) n FROM repos r
           WHERE language != '' AND COALESCE(dropped,0) = 0 AND source != 'discover'
@@ -1418,7 +1450,9 @@ const server = Bun.serve({
       /* ---- fork 落后对比（真打 GitHub compare 接口）---- */
       if (p === "/api/fork/compare" && req.method === "POST") {
         const b = await req.json().catch(() => ({}));
-        const limit = Math.min(50, Math.max(1, Number(b.limit) || 50));
+        // 同样要防 NaN：LIMIT ? 绑到非整数会抛 datatype mismatch。
+        // Math.trunc 不能少，1.5 也会抛。
+        const limit = Math.min(50, Math.max(1, Math.trunc(Number(b.limit)) || 50));
         // 只比没比过的，或用户显式要求重算的
         const rows = b.force
           // 每个 fork 都要打一次 compare，别浪费在已经取消/隐藏的仓库上
@@ -1720,6 +1754,10 @@ const server = Bun.serve({
       if (p === "/api/hide" && req.method === "POST") {
         const b = await req.json();
         const id = Number(b.id);
+        // hidden.repo_id 是 INTEGER PRIMARY KEY（rowid 别名）。传脏值时 Number() 得 NaN，
+        // SQLite 把 NaN 当成「未提供值」并自动分配 rowid —— 实测连发两次就凭空把
+        // id=1、id=2 两个真实仓库隐藏掉。必须像 /api/repo/flag 一样先校验。
+        if (!Number.isInteger(id) || id <= 0) return json({ error: "bad id" }, 400);
         if (b.hidden === false) db.query("DELETE FROM hidden WHERE repo_id=?").run(id);
         else db.query("INSERT OR IGNORE INTO hidden (repo_id, at) VALUES (?,?)").run(id, now());
         return json({ ok: true });
@@ -1782,7 +1820,10 @@ const server = Bun.serve({
       /* ---- 检查新版本 ---- */
       if (p === "/api/releases/check" && req.method === "POST") {
         const b = await req.json().catch(() => ({}));
-        const r = await checkReleases(Number(b.limit || 25));
+        // bun:sqlite 给 LIMIT ? 绑 NaN 会抛 datatype mismatch → 500。
+        // 实测 null / undefined / 1.5 同样抛，只有整数安全，所以在入口收口。
+        const lim = Math.min(100, Math.max(1, Math.trunc(Number(b.limit)) || 25));
+        const r = await checkReleases(lim);
         return json({ ok: true, ...r });
       }
 

@@ -105,7 +105,27 @@ describe("真实 README 片段", () => {
     expect(render("这是一个开源项目，用来做本地收藏管理。")).toContain("这是一个开源项目");
   });
   test("超长 README 被截断到 200KB 以内", () => {
+    // 上界必须贴着 200000：早先写 200000*6，即使把 md.js 里的截断整段删掉
+    // 这条测试照样 pass，等于什么都没锁。
     const out = render("x".repeat(300000));
-    expect(out.length).toBeLessThanOrEqual(200000 * 6);
+    expect(out.length).toBeLessThanOrEqual(200000 + 32);   // 32 是 <p> 等包装标签的余量
+    expect(out).not.toContain("x".repeat(200001));
+  });
+
+  test("data:image 只放行位图，svg+xml 不放行", () => {
+    // SVG 是 XML，能带脚本；CSP 的 img-src 里 data: 是显式放行的，拦不住。
+    const png = render('<img src="data:image/png;base64,AAAA">');
+    expect(png).toContain("data:image/png;base64,AAAA");
+    const svg = render('<img src="data:image/svg+xml,<svg onload=alert(1)>">');
+    expect(svg).not.toContain("data:image/svg+xml");
+  });
+
+  test("srcset 里含 data URL 的逗号不被当分隔符", () => {
+    // 按逗号盲切会把一个 data URL 拆成几段不存在的 CDN 地址
+    const out = render('<img srcset="data:image/png;base64,AAA=, ./b.png 2x">', "o/r");
+    expect(out).toContain("data:image/png;base64,AAA=");
+    // 只有 ./b.png 该被改写：data URL 原样保留，不能拆出第二、第三个 CDN 地址
+    expect((out.match(/cdn\.jsdelivr\.net/g) || []).length).toBe(1);
+    expect(out).toContain("@HEAD/b.png");
   });
 });

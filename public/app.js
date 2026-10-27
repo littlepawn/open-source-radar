@@ -1,5 +1,9 @@
 /* 开源雷达 前端：零依赖 */
 const $ = (s) => document.querySelector(s);
+// localStorage 在某些环境下会直接抛（Safari 无痕 / 被策略禁用），而这三处都在
+// 模块初始化阶段同步执行，抛了就是整页失效。读写一律走这两个包装。
+const lsGet = (k, d = null) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
 const api = async (p, opt) => {
   const r = await fetch(p, opt);
   const t = await r.text();
@@ -63,8 +67,10 @@ const state = {
   status: null,
   // 标签 / 语言是否展开。默认折叠——标签会随同步越攒越多，
   // 全铺开会把同步按钮和用户信息挤出侧栏。选择记在 localStorage。
-  openTags: localStorage.getItem("radar-open-tags") === "1",
-  openLangs: localStorage.getItem("radar-open-langs") === "1",
+  // 这三处都在模块顶层同步读：一旦 localStorage 不可用（Safari 无痕、站点禁用、
+  // 隐私插件），异常发生在事件注册之前，整页就是一个死的空壳。包一层兜住。
+  openTags: lsGet("radar-open-tags") === "1",
+  openLangs: lsGet("radar-open-langs") === "1",
 };
 
 /* 标签 / 语言的小折叠。判据不是「条数超过几个」，而是「实际高度超过三行」——
@@ -236,7 +242,12 @@ function emptyText() {
 }
 
 /* ---------------- 列表 */
+// 列表请求的序号。搜索框防抖 220ms 挡不住慢请求乱序：
+// 输入 a→ab→abc 三次并发，ab 晚返回就会把 abc 的结果覆盖掉，
+// 而搜索框里明明写着 abc。侧栏连点两下也是同一个问题。
+let listSeq = 0;
 async function loadRepos() {
+  const mySeq = ++listSeq;
   const q = new URLSearchParams({ q: state.q, source: state.scope, tag: state.tag, lang: state.lang, sort: state.sort });
   if (state.scope === "hidden") q.set("source", "hidden");
   if (state.scope === "discover") q.set("source", "discover");
@@ -244,6 +255,7 @@ async function loadRepos() {
   // 待读 / 停滞 / 已放弃：走服务端的 view 过滤，不在这儿再筛一遍
   if (state.filter) q.set("view", state.filter);
   const d = await api("/api/repos?" + q.toString());
+  if (mySeq !== listSeq) return;   // 已经有更新的请求了，这份结果作废
   state.items = d.items || [];
   $("#cards").innerHTML = state.items.map((r) => cardHTML(r)).join("");
   const empty = $("#empty");
@@ -264,14 +276,20 @@ async function loadRepos() {
 /* ---------------- 抽屉 */
 let drawerSeq = 0;
 async function openRepo(id) {
+  // 必须在 await 之前取号：晚到的响应不能覆盖后点的仓库，更不能把已关闭的抽屉重新弹开。
+  // 早先这里在渲染完之后才 ++drawerSeq，等于只保护了 README 那一段——
+  // 「点 B 出来 A」「关掉又自己弹回来」两个 bug 都是这么来的。
+  const mySeq = ++drawerSeq;
   let r;
   try {
     r = await api(`/api/repo/${id}`);
   } catch (e) {
     // 抽屉打开失败（仓库被删/转私有/网络错误）之前是静默 promise rejection，用户点了没反应
+    if (mySeq !== drawerSeq) return;
     toast("打不开该仓库：" + e.message);
     return;
   }
+  if (mySeq !== drawerSeq) return;   // 期间又点了别的仓库，这次的结果作废
   const tags = (r.tags || []).map((t) => t.name);
   const allTags = state.tags.map((t) => t.name);
   const topics = parseTopics(r.topics);
@@ -317,8 +335,7 @@ async function openRepo(id) {
       <button class="ghost" id="hideBtn">${r.hidden ? "恢复显示" : "隐藏该项目"}</button>
       <button class="ghost" id="starBtn">${r.source === "fork" ? "打开 Fork 源" : "去 GitHub 取消/加 Star"}</button>
     </div>`;
-  const mySeq = ++drawerSeq;
-  $("#drawer").hidden = false;
+  if (mySeq === drawerSeq) $("#drawer").hidden = false;
 
   $("#digSave").onclick = async () => {
     await api("/api/repo/update", {
@@ -359,6 +376,12 @@ async function openRepo(id) {
     refresh(false);
   };
   $("#hideBtn").onclick = async () => {
+    // 卡片上的「隐藏」按钮有二次确认（用户明确要求过），抽屉里这个却没有，
+    // 同一个破坏性操作两条路径行为不一致。恢复显示不需要拦。
+    if (!r.hidden) {
+      const ok = confirm(`${r.name || r.full_name}\n\n隐藏后从列表消失，但不会取消 star；在侧栏「已隐藏」里能恢复。\n\n确定隐藏吗？`);
+      if (!ok) return;
+    }
     await api("/api/hide", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -493,43 +516,15 @@ function aiBlock(r) {
 
 const aiState = { repoId: null, history: [] };
 
+// 「用规则重算」的预览必须与服务端落库的结果一致，所以不再在本地维护第二份规则表：
+// 规则由 scripts/gen-rules.mjs 从 lib/rules.mjs 生成到 public/rules.js（window.RadarRules）。
+// 早先这里手抄了一份 29 条，缺「知识管理」、把 malware 归成「逆向 / 安全研究」，
+// 用户在抽屉里点重算看到的和保存后服务端的完全对不上。
 function rulePreview(r, topics) {
-  const hay = `${r.description || ""} ${topics.join(" ")} ${r.name || ""} ${r.language || ""}`.toLowerCase();
-  const R = [
-    [/ppt|slide|presentation|keynote|powerpoint/, "做 PPT / 演示文稿"],
-    [/excel|spreadsheet|xlsx|office|docx|\bword\b/, "文档表格处理"],
-    [/agent|langgraph|autogen/, "AI Agent 框架"],
-    [/llm|gpt|claude|qwen|deepseek|inference|vllm|ollama/, "大模型推理与服务"],
-    [/\brag\b|ragflow|embedding|vector|milvus|chroma|faiss/, "向量检索 / RAG"],
-    [/diffusion|comfyui|\bflux\b|sdxl|image-gen/, "AI 文生图"],
-    [/tts|voice|speech|whisper|asr|audio|music|\bsing/, "语音合成与识别"],
-    [/video|ffmpeg|subtitle|remotion/, "视频处理"],
-    [/docker|kubernetes|k8s|helm|compose/, "容器与编排"],
-    [/proxy|tunnel|frp|wireguard|vpn|clash|sing-box|v2ray|xray|nginx/, "网络代理 / 反代"],
-    [/monitor|prometheus|grafana|uptime|alert/, "监控告警"],
-    [/\bnas\b|home-assistant|homelab|self-host|dashboard/, "自托管 / 家庭服务器"],
-    [/scrap|crawl|spider|puppeteer|playwright|selenium/, "抓取与浏览器自动化"],
-    [/chrome|extension|userscript|tampermonkey/, "浏览器扩展"],
-    [/macos|swiftui|\bios\b|iphone|uikit|app store/, "Apple 平台应用"],
-    [/\bmagisk\b|\bxposed\b|\bfrida\b|刷机|免root|\badb\b|android.*(逆向|破解|改机|去广告|root)/, "安卓改造与逆向"],
-    [/reverse|decompil|ghidra|\bida\b|exploit|\bpwn\b|malware/, "逆向 / 安全研究"],
-    [/crypto|bitcoin|ethereum|blockchain|web3|wallet/, "区块链"],
-    [/sql|database|postgres|mysql|sqlite|redis|mongo|\borm\b/, "数据库"],
-    [/terminal|shell|\bcli\b|\btui\b/, "命令行 / TUI"],
-    [/editor|vim|neovim|emacs|\bide\b|code[- ]?editor/, "编辑器 / IDE"],
-    [/(?<![a-z0-9-])ui\b(?![-.])|component|tailwind|\breact\b|\bvue\b|svelte|frontend|\bcss\b/, "前端 UI / 组件"],
-    [/\be2e\b|cypress|jest|vitest|test-framework/, "测试工程"],
-    [/\bci\b|continuous (delivery|integration)|pipeline|github action|devops|ci\/cd/, "CI/CD"],
-    [/security|vulnerab|\bcve\b|pentest|\bhack(ing|er)?\b|hackthebox|渗透|漏洞/, "安全攻防"],
-    [/game|emulator|retro|steam/, "游戏"],
-    [/download|magnet|torrent|onedrive|aliyun/, "下载 / 网盘"],
-    [/translat|i18n/, "翻译"],
-    [/\bpdf\b|\bocr\b|\bscan(n(ing|er))?\b|文字识别|识别文字/, "OCR 识别"],
-  ];
-  const hits = R.filter(([re]) => re.test(hay)).map((x) => x[1]).slice(0, 2);
+  if (globalThis.RadarRules?.rulePreview) return RadarRules.rulePreview(r, topics);
+  // rules.js 没加载（本地直接开 index.html 等场景）时退回一句人话，别给空白
   const d = (r.description || "").slice(0, 110);
-  const head = hits.length ? `${hits.join("；")}。${d}` : d || "暂无描述。";
-  return `${head}\n${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${(r.pushed_at || "").slice(0, 10)}`;
+  return `${d || "暂无描述。"}\n${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${(r.pushed_at || "").slice(0, 10)}`;
 }
 
 /* 极简 markdown 渲染器。
@@ -754,11 +749,15 @@ document.addEventListener("click", async (e) => {
   const card = e.target.closest(".card");
   const openBtn = e.target.closest("[data-act='open']");
 
-  if (tagBtn) {
-    if (e.target.closest("[data-stop]") && !e.target.closest("#tagList")) {
-      // 卡片上的标签点击也切换筛选
-    }
-    state.tag = state.tag === tagBtn.dataset.tag ? "" : tagBtn.dataset.tag;
+  // data-tag 有两处来源，行为一致（都是筛选该标签）：
+  //   ① 侧栏 #tagList 的 chip（这是筛选的主入口）
+  //   ② 卡片 .rowtags 里的 chip（在列表里顺手筛同类，很实用，保留）
+  // 而 data-stop 还挂在卡片「仓库名链接」和「↗」上 —— 那些是导航，不是标签，
+  // 一律放行给后面的 openBtn / card 分支去打开详情，不能被当成筛选吞掉。
+  // 判据：tagBtn 必须落在上面两种 chip 容器之一，否则不算标签点击。
+  const tagChip = tagBtn && e.target.closest("#tagList, .rowtags") ? tagBtn : null;
+  if (tagChip) {
+    state.tag = state.tag === tagChip.dataset.tag ? "" : tagChip.dataset.tag;
     state.view = "repos";
     showView("repos");
     await refresh();
@@ -928,8 +927,11 @@ $("#dSort").addEventListener("change", () => {
 // 记一笔「用户动过手」，之后迟到的默认值不再回填。
 for (const [id, key] of [["#dStars", "stars"], ["#dDays", "days"]]) {
   $(id).addEventListener("input", () => noteDiscoverManualInput(key));
+  // number 框上按 Enter 会同时触发 keydown 和 change，不拦就是一次回车发两次
+  // /api/discover——没配 token 时搜索配额只有 10 次/分钟，白扔一次很亏。
+  // 做法：keydown 里吃掉回车并失焦，让 change 成为唯一的触发点。
   $(id).addEventListener("keydown", (e) => {
-    if (e.key === "Enter") loadDiscover();
+    if (e.key === "Enter") { e.preventDefault(); $(id).blur(); }
   });
   $(id).addEventListener("change", loadDiscover);
 }
@@ -959,13 +961,13 @@ $("#staleForkGo").addEventListener("click", async () => {
 $("#expBtn").addEventListener("click", () => window.open("/api/export", "_blank"));
 $("#tagMore").addEventListener("click", () => {
   state.openTags = !state.openTags;
-  localStorage.setItem("radar-open-tags", state.openTags ? "1" : "0");
+  lsSet("radar-open-tags", state.openTags ? "1" : "0");
   // 重新渲染而不是只切 class：折叠时要把选中的标签提到最前，纯 class 做不到
   renderSide();
 });
 $("#langMore").addEventListener("click", () => {
   state.openLangs = !state.openLangs;
-  localStorage.setItem("radar-open-langs", state.openLangs ? "1" : "0");
+  lsSet("radar-open-langs", state.openLangs ? "1" : "0");
   applyClamp("#langList", "#langMore", state.openLangs, "语言");
 });
 $("#newTagBtn").addEventListener("click", async () => {
@@ -991,9 +993,9 @@ document.addEventListener("keydown", (e) => {
 $("#themeBtn").addEventListener("click", () => {
   const cur = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = cur;
-  localStorage.setItem("radar-theme", cur);
+  lsSet("radar-theme", cur);
 });
-document.documentElement.dataset.theme = localStorage.getItem("radar-theme") || "dark";
+document.documentElement.dataset.theme = lsGet("radar-theme") || "dark";
 
 /* 同步 + SSE 进度 */
 $("#syncBtn").addEventListener("click", async () => {
@@ -1015,7 +1017,10 @@ function listenEvents() {
   es.onopen = () => { esRetry = 0; };
   es.onmessage = (ev) => {
     esRetry = 0;
-    const d = JSON.parse(ev.data);
+    // 回调里抛异常不会触发 onerror（那是连接层的），所以裸 JSON.parse 一旦吃到
+    // 畸形/截断的帧，既不重连也不报错，只是进度永远停在那儿，看着像同步挂了。
+    let d;
+    try { d = JSON.parse(ev.data); } catch { return; }
     if (d.type === "progress" || d.type === "done" || d.type === "hello") {
       if (state.status) {
         state.status.sync = d;

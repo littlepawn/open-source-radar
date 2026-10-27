@@ -8,39 +8,18 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB = os.environ.get("RADAR_DB") or os.path.join(ROOT, "data", "radar.db")
 SRC = os.environ.get("RADAR_SRC") or os.path.join(ROOT, "data", "mcp-cache.json")
 
-TAGS = [
-    (r"ppt|slide|presentation|keynote|powerpoint", "文档办公"),
-    (r"excel|spreadsheet|xlsx|office|docx|\bword\b", "文档办公"),
-    (r"pdf", "文档办公"),
-    (r"\bnotes?\b|obsidian|markdown|wiki|notion|knowledge", "知识管理"),
-    (r"agent|langgraph|autogen|crew", "AI / Agent"),
-    (r"llm|gpt|claude|qwen|deepseek|gemini|inference|vllm|ollama", "AI / 大模型"),
-    (r"rag|embedding|vector|milvus|chroma|faiss", "RAG / 向量库"),
-    (r"diffusion|stable-diffusion|comfyui|\bflux\b|sdxl", "AI 绘图"),
-    (r"\btts\b|\bvoice\b|speech|whisper|\baudio\b|\basr\b|\bmusic\b|\bsing\b|sing-box", "音频语音"),
-    (r"video|ffmpeg|subtitle|animation|remotion|剪辑|剪映", "视频处理"),
-    (r"docker|kubernetes|k8s|helm|compose", "容器 / 运维"),
-    (r"nginx|proxy|reverse|tunnel|frp|wireguard|vpn|clash|sing-box|v2ray|xray", "网络代理"),
-    (r"monitor|prometheus|grafana|uptime[-_]?monitor|alertmanager", "监控运维"),
-    (r"\bnas\b|home-assistant|homelab|self-host|dashboard|unraid", "自托管"),
-    (r"scrap|crawl|spider|puppeteer|playwright|selenium|browser", "爬虫自动化"),
-    (r"chrome|extension|userscript|tampermonkey", "浏览器扩展"),
-    (r"macos|swiftui|\bios\b|iphone|uikit|app store", "Apple 生态"),
-    (r"\bmagisk\b|\bxposed\b|\bfrida\b|刷机|免root|\badb\b|android.*(逆向|破解|改机|去广告|root)", "安卓逆向"),
-    (r"decompil|ghidra|\bida\b|\bpwn\b|malware|reversing|逆向", "逆向分析"),
-    (r"crypto|bitcoin|ethereum|blockchain|web3|wallet", "区块链"),
-    (r"sql|database|postgres|mysql|sqlite|redis|mongo|\borm\b", "数据库"),
-    (r"terminal|\bshell\b|\bcli\b|\btui\b|command-line", "命令行工具"),
-    (r"editor|vim|neovim|emacs|\bide\b|code[- ]?editor", "编辑器 IDE"),
-    (r"(?<![a-z0-9-])ui\b(?![-.])|component|tailwind|\breact\b|\bvue\b|svelte|frontend|\bcss\b|design system", "前端 UI"),
-    (r"\be2e\b|cypress|jest|vitest|test-framework|testing-framework", "测试工程"),
-    (r"\bci\b|continuous (delivery|integration)|pipeline|github action|devops|ci/cd", "CI/CD"),
-    (r"security|vulnerab|\bcve\b|pentest|\bhack(ing|er)?\b|hackthebox|渗透|漏洞", "安全攻防"),
-    (r"game|emulator|retro|steam", "游戏"),
-    (r"download|magnet|torrent|\bbt\b|onedrive|aliyun|网盘", "下载网盘"),
-    (r"translat|i18n|字幕", "翻译"),
-    (r"\bpdf\b|\bocr\b|\bscan(n(ing|er))?\b|文字识别|识别文字", "OCR"),
-]
+# 规则表不再手抄一份：由 scripts/gen-rules.mjs 从 lib/rules.mjs 生成到 scripts/rules.json。
+# 早先这里的 TAGS 是自己维护的 31 条，rag/pdf 裸写（rag 会命中 d**rag**on）、
+# 标签上限写 [:2] 而 lib 是 [:3]，导致离线导入的库和在线同步的库标签对不上。
+RULES_PATH = os.path.join(ROOT, "scripts", "rules.json")
+if os.path.exists(RULES_PATH):
+    with open(RULES_PATH, encoding="utf-8") as f:
+        _rj = json.load(f)
+    TAGS = [(r["source"] if isinstance(r, dict) else r[0], r["tag"] if isinstance(r, dict) else r[2])
+            for r in _rj["rules"]]
+else:
+    # 没生成过 rules.json 就别静默用错规则，直接说清楚
+    raise SystemExit("缺少 scripts/rules.json，先跑：bun scripts/gen-rules.mjs")
 
 def fmt(n):
     n = n or 0
@@ -49,7 +28,7 @@ def fmt(n):
 def rule_digest(r, topics):
     hay = " ".join(filter(None, [r.get("description") or "", " ".join(topics), r.get("name") or "", r.get("language") or ""])).lower()
     hits = [tag for pat, tag in TAGS if __import__("re").search(pat, hay)]
-    tags = list(dict.fromkeys(hits))[:2]
+    tags = list(dict.fromkeys(hits))[:3]   # 与 lib/rules.mjs 的 ruleDigest 一致（早先是 [:2]，会少一个标签）
     desc = (r.get("description") or "").strip()
     cjk = any("\u4e00" <= ch <= "\u9fa5" for ch in desc)
     if tags:

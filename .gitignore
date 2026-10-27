@@ -1,4 +1,6 @@
 # 数据与构建产物
+__pycache__/
+*.pyc
 data/
 node_modules/
 *.log
