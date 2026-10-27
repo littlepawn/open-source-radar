@@ -18,8 +18,39 @@
   let providerKind = "openai";   // 后端 matchProvider() 判定，见 /api/ai/config 的 provider_kind
   let providerLabel = "";
 
-  async function load() {
+  // 用户动过的字段。每次进设置页都会 load() 一次，若无条件回填，
+  // 用户填一半切走再回来就被冲成已保存的值——和发现页阈值被重置是同一类问题。
+  const dirty = new Set();
+  const TRACKED = ["#aiBase", "#aiModel", "#aiTemp", "#aiMax", "#aiExtra", "#aiKey"];
+
+  // 按指纹比对：值没变就不算「用户改过」，避免程序化回填自己把自己标脏。
+  function watchDirty() {
+    for (const id of TRACKED) {
+      const el = $(id);
+      if (!el || el.dataset.watching) continue;
+      el.dataset.watching = "1";
+      const mark = () => {
+        if (el.value !== (el.dataset.baseline ?? "")) dirty.add(id);
+        else dirty.delete(id);
+      };
+      el.addEventListener("input", mark);
+      el.addEventListener("change", mark);
+    }
+  }
+
+  function setField(sel, value, { force = false } = {}) {
+    const el = $(sel);
+    if (!el) return;
+    const on = Array.from(TRACKED).indexOf(sel) >= 0;
+    if (on && !force && dirty.has(sel)) return;   // 用户改过，别冲掉
+    el.value = value;
+    el.dataset.baseline = el.value;
+    if (on) dirty.delete(sel);
+  }
+
+  async function load(force = false) {
     if (!$("#aiBase")) return;
+    if (force) dirty.clear();   // 保存成功后重读：以服务端为准，清掉脏标记后正常回填
     try {
       const cfg = await api("/api/ai/config");
       presets = cfg.presets || [];
@@ -48,23 +79,26 @@
           updateProviderNote($("#aiBase").value);
         };
       }
-      $("#aiEnabled").checked = !!cfg.enabled;
-      $("#aiBase").value = cfg.base_url || "";
+      // 开关也算用户输入：load() 每次都跑，不加这层判断会把用户刚勾的选择冲回去
+      if (!$("#aiEnabled").dataset.touched) $("#aiEnabled").checked = !!cfg.enabled;
+      setField("#aiBase", cfg.base_url || "");
       // 按已保存的 base_url 反选预设，否则重新进设置页下拉永远显示「自定义」，
       // 用户看不出当前用的是哪家
       if (sel.options.length > 1 && !sel.value) {
         const hit = presets.find((p) => p.base_url && p.base_url.replace(/\/+$/, "") === (cfg.base_url || "").replace(/\/+$/, ""));
         sel.value = hit ? hit.id : "";
       }
-      $("#aiModel").value = cfg.model || "";
-      $("#aiTemp").value = cfg.temperature ?? 0.2;
-      $("#aiMax").value = cfg.max_tokens ?? 2000;
-      $("#aiExtra").value = cfg.extra_prompt || "";
-      $("#aiKey").value = "";
+      setField("#aiModel", cfg.model || "");
+      setField("#aiTemp", String(cfg.temperature ?? 0.2));
+      setField("#aiMax", String(cfg.max_tokens ?? 2000));
+      setField("#aiExtra", cfg.extra_prompt || "");
+      // Key 永不回填明文；用户已手输的也不清空
+      if (!dirty.has("#aiKey") || !$("#aiKey").value) $("#aiKey").value = "";
       // 后端只回 has_key 布尔，不回明文 Key —— 前端永远拿不到它
       $("#aiKey").placeholder = cfg.has_key ? "已保存 Key（留空＝不修改）" : "粘贴 API Key";
       $("#aiHint").textContent = cfg.enabled ? `已启用 · ${cfg.model || "未填模型"}` : "未启用";
       updateProviderNote(cfg.base_url);
+      watchDirty();
     } catch (e) {
       $("#aiHint").textContent = "读取配置失败：" + e.message;
     }
@@ -111,7 +145,7 @@
     try {
       await api("/api/ai/config", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
       $("#aiHint").textContent = "已保存";
-      await load();
+      await load(true);   // 保存后以服务端为准重读，否则用户改过的字段会被 dirty 挡住不刷新
     } catch (e) {
       $("#aiHint").textContent = "保存失败：" + e.message;
     }
@@ -173,7 +207,10 @@
       $("#aiExtra").value = defaultPrompt;
       $("#aiHint").textContent = "已填回默认分析提示词，记得保存";
     };
+    const en = $("#aiEnabled");
+    if (en) en.addEventListener("change", () => { en.dataset.touched = "1"; });
     bindAutoSync();
+    load();
   });
 
   /* ---------------- 自动同步设置 ---------------- */

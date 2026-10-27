@@ -513,30 +513,53 @@ function miniMarkdown(md, base) {
 // 分榜默认值不同是有道理的——总 Star 榜门槛该高，最近活跃榜看的是近期还被推，
 // 200 星就够有意义。
 let DISCOVER_DEFAULTS = { stars: { stars: 2000, days: 365 }, updated: { stars: 200, days: 90 } };
-let discoverDefaultsLoaded = false;
+// 默认值只认「后端首次成功应答」或「后端明确不可用」两种终局，其余情况都算未定。
+// 早先是 boolean 标志：接口失败时标志留在 false，于是每次 loadDiscover 都重新请求，
+// 而请求回来后又无条件 applyDiscoverDefaults(true) 把用户刚输入的 30 冲回 365——
+// 用户看到的就是「输入 30，移开又变大」。
+// pending  Promise 缓存：「正在取」也算已定，避免并发请求重复打后端。
+let discoverDefaultsPromise = null;
+// 按字段分别记「用户是否亲手改过」：只改了天数，换榜时 Star 门槛仍该跟着榜单默认走，
+// 而用户改过的天数必须原样保留。整块共用一个标志做不到这件事。
+const discoverTouched = { stars: false, days: false };
 
 function discoverSortKey() {
   return $("#dSort").value === "updated" ? "updated" : "stars";
 }
 
-// 只在「用户还没动过输入框」时填默认值，避免把用户改过的数字冲掉。
-function applyDiscoverDefaults(force) {
+// mode：
+//   "reset" —— 用户点「恢复默认」，无条件覆盖并清掉改动痕迹；
+//   "auto"  —— 首屏填充与换榜单：只补空位和用户没碰过的字段。
+function applyDiscoverDefaults(mode) {
+  if (mode === "reset") { discoverTouched.stars = false; discoverTouched.days = false; }
+  const explicit = mode === "reset";
   const def = DISCOVER_DEFAULTS[discoverSortKey()] || DISCOVER_DEFAULTS.stars;
-  if (force || !$("#dStars").value) $("#dStars").value = def.stars;
-  if (force || !$("#dDays").value) $("#dDays").value = def.days;
+  for (const [sel, key, val] of [["#dStars", "stars", def.stars], ["#dDays", "days", def.days]]) {
+    const el = $(sel);
+    // 自动填充只补「空位」或「用户没碰过的字段」；用户填过的一律不动。
+    if (explicit || !discoverTouched[key] || !el.value) el.value = val;
+  }
+}
+
+function noteDiscoverManualInput(key) {
+  if (key && key in discoverTouched) discoverTouched[key] = true;
 }
 
 async function loadDiscoverDefaults() {
-  if (discoverDefaultsLoaded) return;
-  try {
-    const d = await api("/api/discover/defaults");
-    if (d.defaults) DISCOVER_DEFAULTS = d.defaults;
-    if (d.note) $("#dReset").title = d.note + "（恢复默认阈值）";
-    discoverDefaultsLoaded = true;
-  } catch {
-    // 拿不到就用代码里这份兜底，不阻塞首屏
-  }
-  applyDiscoverDefaults(true);
+  // 已经取过（成功或失败）就直接用内存里的值，不再打后端。
+  if (discoverDefaultsPromise) return discoverDefaultsPromise;
+  discoverDefaultsPromise = (async () => {
+    try {
+      const d = await api("/api/discover/defaults");
+      if (d?.defaults) DISCOVER_DEFAULTS = d.defaults;
+      if (d?.note) $("#dReset").title = d.note + "（恢复默认阈值）";
+    } catch {
+      // 拿不到就退回代码里这份兜底值；标志已置位，不再重复请求、也不再回填。
+    }
+    // 只补空位；用户已输入的数值一律不动。
+    applyDiscoverDefaults("auto");
+  })();
+  return discoverDefaultsPromise;
 }
 
 function discoverConditionNote() {
@@ -821,17 +844,25 @@ $("#resetFilters").addEventListener("click", async () => {
   await refresh();
 });
 $("#dGo").addEventListener("click", loadDiscover);
-// 换榜单时把该榜的默认阈值填回去——但只在用户没手动改过时（见 applyDiscoverDefaults）
-$("#dSort").addEventListener("change", () => { applyDiscoverDefaults(false); loadDiscover(); });
-// 数字框改完回车即搜，和点「搜索」等价；不监听 input，免得打一半就发请求
-for (const id of ["#dStars", "#dDays"]) {
+// 换榜单只换「默认值」本身，不动用户亲手填的数字：
+// 之前这里传 "user" 会强制回填，用户手输 45 天一切榜就被冲成 90，属于同类重置问题。
+// 要让阈值跟着榜单走，点「恢复默认」。
+$("#dSort").addEventListener("change", () => {
+  // 用户还没碰过阈值时，换榜就顺手填上该榜默认值（首次使用体验）
+  applyDiscoverDefaults("auto");
+  loadDiscover();
+});
+// 数字框改完回车即搜，和点「搜索」等价；不监听 input，免得打一半就发请求。
+// 记一笔「用户动过手」，之后迟到的默认值不再回填。
+for (const [id, key] of [["#dStars", "stars"], ["#dDays", "days"]]) {
+  $(id).addEventListener("input", () => noteDiscoverManualInput(key));
   $(id).addEventListener("keydown", (e) => {
     if (e.key === "Enter") loadDiscover();
   });
   $(id).addEventListener("change", loadDiscover);
 }
 $("#dReset").addEventListener("click", () => {
-  applyDiscoverDefaults(true);
+  applyDiscoverDefaults("reset");
   loadDiscover();
 });
 $("#relGo").addEventListener("click", () => loadReleases(true));
