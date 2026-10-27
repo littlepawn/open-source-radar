@@ -713,6 +713,22 @@ async function fetchReadme(row) {
   return text;
 }
 
+/* ---------------------------------------------------------------- 临时仓库收编 */
+// 发现页的仓库不在本地库：点开时按 GitHub id 拉详情入库（source=discover），
+// 抽屉的简介/标签/README/隐藏等操作才有落点。404/403（TOS 封禁等）返回 null。
+async function adoptRepo(id) {
+  const ghRepo = await gh(`/repositories/${id}`).catch(() => null);
+  if (!ghRepo || !ghRepo.id || !ghRepo.full_name) return null;
+  const row = saveRepo(ghRepo, "discover", null);
+  if (!row) return null;
+  const tags = applyAutoTags(row);
+  for (const t of tags) {
+    const tag = tagByName(t);
+    addRepoTag.run(row.id, tag.id, "auto");
+  }
+  return db.query("SELECT * FROM repos WHERE id=?").get(row.id);
+}
+
 /* ---------------------------------------------------------------- 发现：热门开源项目 */
 const CN_BLOCK = /(色情|博彩|赌博|代刷|刷单|外挂辅助售卖)/;
 
@@ -861,7 +877,12 @@ function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", sc
   // 隐藏过滤消失，scope=hidden 会返回全部仓库（实测 226 条）。
   const wantHidden = scope === "hidden" || source === "hidden";
   where.push(wantHidden ? "h.repo_id IS NOT NULL" : "h.repo_id IS NULL");
-  if (source === "starred" || source === "fork") { where.push("r.source = ?"); args.push(source); }
+  if (source === "starred" || source === "fork" || source === "discover") {
+    where.push("r.source = ?"); args.push(source);
+  } else if (!wantHidden) {
+    // 默认「全部」视图不掺发现页收编的临时仓库，只在我明确点「发现过的」时出现
+    where.push("r.source != 'discover'");
+  }
   if (lang) { where.push("r.language = ?"); args.push(lang); }
   if (tag) {
     where.push("r.id IN (SELECT rt.repo_id FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE t.name=?)");
@@ -1036,7 +1057,7 @@ const server = Bun.serve({
           token_source: ENV_TOKEN ? "env" : runtimeToken ? "login" : "none",
           token: currentToken() ? "已配置" : "未配置（匿名 60 次/小时）",
           rate,
-          counts: { starred: bySource.starred || 0, fork: bySource.fork || 0, hidden: bySource.hidden || 0 },
+          counts: { starred: bySource.starred || 0, fork: bySource.fork || 0, discover: bySource.discover || 0, hidden: bySource.hidden || 0 },
           stars_synced_at: getMeta("stars_synced_at"),
           forks_synced_at: getMeta("forks_synced_at"),
           releases_checked_at: getMeta("releases_checked_at"),
@@ -1057,16 +1078,22 @@ const server = Bun.serve({
       const mRepo = p.match(/^\/api\/repo\/(\d+)$/);
       if (mRepo) {
         const id = Number(mRepo[1]);
-        const row = db.query("SELECT * FROM repos WHERE id=?").get(id);
-        if (!row) return json({ error: "not found" }, 404);
+        let row = db.query("SELECT * FROM repos WHERE id=?").get(id);
+        if (!row) {
+          row = await adoptRepo(id);
+          if (!row) return json({ error: "not found" }, 404);
+        }
         return json({ ...row, tags: (db.query(
           "SELECT t.name, t.kind FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE rt.repo_id=?", ).all(id)) });
       }
 
       const mReadme = p.match(/^\/api\/repo\/(\d+)\/readme$/);
       if (mReadme) {
-        const row = db.query("SELECT * FROM repos WHERE id=?").get(Number(mReadme[1]));
-        if (!row) return json({ error: "not found" }, 404);
+        let row = db.query("SELECT * FROM repos WHERE id=?").get(Number(mReadme[1]));
+        if (!row) {
+          row = await adoptRepo(Number(mReadme[1]));
+          if (!row) return json({ error: "not found" }, 404);
+        }
         const md = await fetchReadme(row);
         return json({ id: row.id, markdown: md });
       }

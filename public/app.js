@@ -67,6 +67,8 @@ function renderSide() {
   $("#nStar").textContent = st.counts?.starred || 0;
   $("#nFork").textContent = st.counts?.fork || 0;
   $("#nHide").textContent = st.counts?.hidden || 0;
+  $("#nDisc").textContent = st.counts?.discover || 0;
+  $("#nDisc").textContent = st.counts?.discover || 0;
   const tags = st.tags || [];
   state.tags = tags;
   $("#tagCount").textContent = tags.length ? `${tags.length}` : "";
@@ -127,6 +129,7 @@ function cardHTML(r, ctx = "repo") {
 async function loadRepos() {
   const q = new URLSearchParams({ q: state.q, source: state.scope, tag: state.tag, lang: state.lang, sort: state.sort });
   if (state.scope === "hidden") q.set("source", "hidden");
+  if (state.scope === "discover") q.set("source", "discover");
   const d = await api("/api/repos?" + q.toString());
   state.items = d.items || [];
   $("#cards").innerHTML = state.items.map((r) => cardHTML(r)).join("");
@@ -142,7 +145,14 @@ async function loadRepos() {
 /* ---------------- 抽屉 */
 let drawerSeq = 0;
 async function openRepo(id) {
-  const r = await api(`/api/repo/${id}`);
+  let r;
+  try {
+    r = await api(`/api/repo/${id}`);
+  } catch (e) {
+    // 抽屉打开失败（仓库被删/转私有/网络错误）之前是静默 promise rejection，用户点了没反应
+    toast("打不开该仓库：" + e.message);
+    return;
+  }
   const tags = (r.tags || []).map((t) => t.name);
   const allTags = state.tags.map((t) => t.name);
   const topics = parseTopics(r.topics);
