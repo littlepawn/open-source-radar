@@ -14,7 +14,9 @@ LABEL org.opencontainers.image.title="open-source-radar" \
 WORKDIR /app
 
 # 只拷贝运行所需文件，保持镜像精简
+# lib/ 是 server.mjs 的 import 依赖（规则引擎 / AI 上下文 / 洞察计算），漏掉会启动即崩
 COPY server.mjs ./server.mjs
+COPY lib ./lib
 COPY public ./public
 
 # 数据目录：镜像内建好并交给 bun 用户写（挂载卷覆盖时仍可用）

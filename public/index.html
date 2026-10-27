@@ -29,6 +29,19 @@
     </nav>
 
     <div class="sideblock">
+      <div class="sidehead">待办与体检</div>
+      <div class="taglist">
+        <!-- 这三个是「列表过滤器」（data-filter），不是独立面板（data-view）：
+             它们复用主列表 #viewRepos，只是把服务端的 view 参数换掉。 -->
+        <button class="navitem slim" data-filter="toread"><i>◷</i>待读队列 <em id="nToread">0</em></button>
+        <button class="navitem slim" data-filter="stale"><i>◌</i>停滞超半年 <em id="nStale">0</em></button>
+        <button class="navitem slim" data-filter="dropped"><i>✕</i>已放弃 <em id="nDropped">0</em></button>
+        <button class="navitem slim" data-view="cleanup"><i>♻</i>清理建议</button>
+        <button class="navitem slim" data-view="ai"><i>✧</i>AI 设置</button>
+      </div>
+    </div>
+
+    <div class="sideblock">
       <div class="sidehead">标签<span id="tagCount"></span>
         <button id="newTagBtn" class="icon tagplus" type="button" aria-label="新建标签" title="新建标签">＋</button></div>
       <div id="tagList" class="taglist"></div>
@@ -64,6 +77,12 @@
     </header>
 
     <div id="viewRepos">
+      <!-- 停滞视图复用主列表，只多这一条工具行。data-filter="stale" 时显示。 -->
+      <div class="discoverbar" id="staleBar" hidden>
+        <span class="minihint">半年没推送、也没归档标记的库。看是否还值得留在收藏里。</span>
+        <button id="staleForkGo" class="ghost" title="逐个数一下 fork 落后上游多少提交">检查 Fork 落后</button>
+        <span class="minihint" id="staleHint"></span>
+      </div>
       <div class="crumb" id="crumb"></div>
       <div id="cards" class="cards"></div>
       <div id="empty" class="empty" hidden>没有匹配结果。先点左下角「同步 GitHub」，或换个关键词。</div>
@@ -93,6 +112,47 @@
       </div>
       <div id="relList" class="cards"></div>
     </div>
+
+    <div id="viewCleanup" hidden>
+      <div class="discoverbar">
+        <button id="cleanupGo" class="primary">生成清理建议</button>
+        <span class="minihint" id="cleanupHint"></span>
+      </div>
+      <div class="minihint safetyline">建议只是建议：这里不会替你取消 star，也不会自动隐藏任何仓库。真要处置，点进详情手动操作。</div>
+      <div id="cleanupList" class="cards"></div>
+    </div>
+
+    <div id="viewAI" hidden>
+      <div class="aipanel">
+        <div class="sec-title">AI 接入</div>
+        <div class="minihint">任何兼容 OpenAI Chat Completions 的服务都能用：官方 OpenAI、DeepSeek、Moonshot、智谱、通义、本机 Ollama 等。Key 加密后存本地库，不出本机。</div>
+        <div class="aiform">
+          <label class="frow"><span>启用</span><input id="aiEnabled" type="checkbox" /></label>
+          <label class="frow"><span>服务预设</span>
+            <select id="aiPreset"></select>
+          </label>
+          <label class="frow"><span>Base URL</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" /></label>
+          <label class="frow"><span>模型</span><input id="aiModel" placeholder="deepseek-chat" /></label>
+          <label class="frow"><span>API Key</span><input id="aiKey" type="password" placeholder="留空表示不修改已保存的 Key" /></label>
+          <label class="frow"><span>温度</span><input id="aiTemp" type="number" step="0.1" min="0" max="2" placeholder="0.2" /></label>
+          <label class="frow"><span>单次上限 tokens</span><input id="aiMax" type="number" min="200" max="8000" placeholder="2000" /></label>
+          <label class="frow col"><span>额外系统提示（可选）</span>
+            <textarea id="aiExtra" rows="3" placeholder="例如：回答尽量短，先说能不能用在生产环境"></textarea>
+          </label>
+        </div>
+        <div class="btnrow">
+          <button id="aiSave" class="primary">保存</button>
+          <button id="aiTest" class="ghost">测试连通</button>
+          <span class="minihint" id="aiHint"></span>
+        </div>
+        <div class="sec-title">问什么比较有用</div>
+        <div class="minihint">
+          打开任意仓库 → 详情页底部「问 AI」。已自动带上 README、目录结构和关键文件内容，所以可以直接问：
+          「这库和 X 比有什么取舍」「生产环境敢用吗，坑在哪」「想只用一个功能，怎么最小改造」
+          「这库还活跃吗，维护者是谁」「它依赖了哪些外部服务」。
+        </div>
+      </div>
+    </div>
   </main>
 
   <div id="drawer" class="drawer" hidden>
@@ -103,6 +163,8 @@
   </div>
   <div id="toast" class="toast" hidden></div>
 </div>
+<script src="/md.js"></script>
+<script src="/ai.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

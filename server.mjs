@@ -21,6 +21,9 @@ import { readFileSync, existsSync, mkdirSync, statSync } from "node:fs";
 import { join, dirname, extname, normalize as pnorm } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+import { ruleDigest } from "./lib/rules.mjs";
+import { pickKeyFiles, buildMessages, validateAiConfig, AI_PRESETS } from "./lib/ai.mjs";
+import { stagnation, cleanupCandidates, forkLag, forkLagText, similarTo } from "./lib/insight.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT || 8788);
@@ -85,11 +88,24 @@ CREATE INDEX IF NOT EXISTS idx_repos_source ON repos(source);
 CREATE INDEX IF NOT EXISTS idx_repos_stars  ON repos(stars DESC);
 CREATE INDEX IF NOT EXISTS idx_repos_pushed ON repos(pushed_at DESC);
 `);
-// 轻量迁移：老库补列
-for (const [col, ddl] of [["upstream", "ALTER TABLE repos ADD COLUMN upstream TEXT"]]) {
-  const cols = db.query("PRAGMA table_info(repos)").all().map((c) => c.name);
-  if (!cols.includes(col)) db.exec(ddl);
+// 轻量迁移：老库补列。SQLite 的 ADD COLUMN 不能带 NOT NULL 无默认值，全部给默认。
+function addColumn(table, col, ddl) {
+  const cols = db.query(`PRAGMA table_info(${table})`).all().map((c) => c.name);
+  if (!cols.includes(col)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
 }
+addColumn("repos", "upstream", "upstream TEXT");
+addColumn("repos", "note", "note TEXT");                       // 手写备注，独立于 digest
+addColumn("repos", "toread", "toread INTEGER DEFAULT 0");      // 待读队列
+addColumn("repos", "opened_at", "opened_at TEXT");             // 首次打开详情的时间
+addColumn("repos", "open_count", "open_count INTEGER DEFAULT 0"); // 打开次数，清理建议要用
+addColumn("repos", "dropped", "dropped INTEGER DEFAULT 0");    // 放弃标记（与 hidden 不同，不动 star）
+addColumn("repos", "dropped_at", "dropped_at TEXT");
+addColumn("repos", "fork_behind", "fork_behind INTEGER");      // fork 落后上游 commit 数，null=未比对
+addColumn("repos", "fork_ahead", "fork_ahead INTEGER");
+addColumn("repos", "fork_checked_at", "fork_checked_at TEXT");
+addColumn("repos", "branch", "branch TEXT");                    // 默认分支，fork 对比要两端同名
+db.exec(`CREATE INDEX IF NOT EXISTS idx_repos_dropped ON repos(dropped);`);
+addColumn("repos", "ai_summary", "ai_summary TEXT");
 db.exec(`
 
 CREATE TABLE IF NOT EXISTS tags (
@@ -125,6 +141,9 @@ CREATE TABLE IF NOT EXISTS events (
   msg   TEXT
 );
 `);
+// 标签两级分组：parent 为空表示顶层。必须在建表之后调用，否则 PRAGMA 查不到表，
+// addColumn 会以为列不存在而去 ALTER 一张不存在的表（或被 IF NOT EXISTS 静默吞掉）。
+addColumn("tags", "parent", "parent TEXT");
 
 const now = () => new Date().toISOString();
 function log(level, msg) {
@@ -249,6 +268,103 @@ function clearStoredToken() {
 // 当前生效 token：环境变量 > 登录时保存的
 function currentToken() {
   return ENV_TOKEN || runtimeToken || "";
+}
+
+/* ---------------------------------------------------------------- AI 配置
+   key 存在 auth 表（与 GitHub token 同一套 AES-256-GCM），meta 表只存不含密钥的字段。
+   读取时 key 永远只回 "已配置/未配置"，绝不落到 HTTP 响应里。            */
+const AI_DEFAULTS = {
+  enabled: false,
+  base_url: "https://api.deepseek.com/v1",
+  model: "deepseek-chat",
+  max_tokens: 2000,
+  temperature: 0.2,
+  extra_prompt: "",
+};
+function getAiConfig() {
+  const cfg = { ...AI_DEFAULTS };
+  for (const k of Object.keys(AI_DEFAULTS)) {
+    const v = getMeta(`ai_${k}`);
+    if (v === null || v === undefined) continue;
+    if (typeof AI_DEFAULTS[k] === "number") cfg[k] = Number(v);
+    else if (typeof AI_DEFAULTS[k] === "boolean") cfg[k] = v === "true" || v === "1";
+    else cfg[k] = v;
+  }
+  cfg.has_key = !!db.query("SELECT v FROM auth WHERE k='ai_key'").get();
+  return cfg;
+}
+function setAiKey(plain) {
+  const s = String(plain || "").trim();
+  if (!s) return db.query("DELETE FROM auth WHERE k='ai_key'").run();
+  db.query("INSERT INTO auth (k,v) VALUES ('ai_key',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(encToken(s));
+}
+function aiKey() {
+  const row = db.query("SELECT v FROM auth WHERE k='ai_key'").get();
+  return row ? decToken(row.v) : "";
+}
+
+// 单仓对话上下文缓存：同一个仓库同一份 README 不必每次重拉文件树。
+// 只放进程内存，重启即失效（README 会变，长期缓存反而会答错）。
+const aiCtxCache = new Map();   // repo_id -> { readme, tree, files, at }
+const AI_CTX_TTL_MS = 10 * 60 * 1000;
+
+async function aiRepoContext(row, { wantTree = true } = {}) {
+  const hit = aiCtxCache.get(row.id);
+  if (hit && Date.now() - hit.at < AI_CTX_TTL_MS) return hit;
+  const readme = await fetchReadme(row).catch(() => "");
+  let tree = [];
+  let files = {};
+  if (wantTree && currentToken()) {
+    try {
+      const repo = await gh(`/repos/${row.full_name}`);
+      const branch = repo?.default_branch || "main";
+      const t = await gh(`/repos/${row.full_name}/git/trees/${branch}?recursive=1`);
+      tree = (t?.tree || []).filter((x) => x.type === "blob").map((x) => x.path);
+      for (const f of pickKeyFiles(tree, 6)) {
+        const blob = await gh(`/repos/${row.full_name}/contents/${encodeURIComponent(f)}?ref=${branch}`, { accept: "application/vnd.github.raw" });
+        if (typeof blob === "string") files[f] = blob;
+      }
+    } catch (e) {
+      log("warn", `拉取 ${row.full_name} 结构失败：${e.message}`);
+    }
+  }
+  const ctx = { readme, tree, files, at: Date.now() };
+  aiCtxCache.set(row.id, ctx);
+  return ctx;
+}
+
+// OpenAI 兼容的 chat/completions，一套配置覆盖 DeepSeek / 通义 / Kimi / Ollama / oneAPI
+async function aiChat(messages, cfg) {
+  const key = aiKey();
+  if (!key) throw new Error("未配置 AI API Key（在「AI 设置」里填）");
+  const url = String(cfg.base_url).replace(/\/+$/, "") + "/chat/completions";
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${key}`,
+    },
+    body: JSON.stringify({
+      model: cfg.model,
+      messages,
+      max_tokens: Number(cfg.max_tokens) || 2000,
+      temperature: Number(cfg.temperature) ?? 0.2,
+      stream: false,
+    }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const text = await res.text();
+  if (!res.ok) {
+    // 中转站常把真实原因塞在 body 里，别只报状态码
+    let msg = text.slice(0, 400);
+    try { const j = JSON.parse(text); msg = j.error?.message || j.message || msg; } catch {}
+    throw new Error(`AI 接口 ${res.status}：${msg}`);
+  }
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error("AI 接口返回的不是 JSON"); }
+  const content = data?.choices?.[0]?.message?.content;
+  if (!content) throw new Error("AI 返回空内容");
+  return { content, usage: data.usage || null, model: data.model || cfg.model };
 }
 
 function parseCookies(req) {
@@ -426,68 +542,22 @@ async function paged(path, onPage, { maxPages = 50, perPage = 100, accept } = {}
 }
 
 /* ---------------------------------------------------------------- 中文简介规则引擎 */
-const RULES = [
-  // [正则, 中文场景短语, 兜底标签]
-  [/ppt|slide|presentation|keynote|powerpoint/i, "做 PPT / 演示文稿（AI 直接把文档或主题生成可编辑的演示稿）", "文档办公"],
-  [/excel|spreadsheet|xlsx|office|docx|\bword\b/i, "文档 / 表格处理，本地读写 Office 文件", "文档办公"],
-  [/pdf/i, "PDF 解析、转换与批注处理", "文档办公"],
-  [/\bnotes?\b|obsidian|markdown|wiki|notion|knowledge|second[- ]?brain/i, "笔记 / 知识库与 Markdown 写作管理", "知识管理"],
-  [/agent|autogpt|crew|langgraph|autogen/i, "AI Agent 框架，把大模型串成能自己干活的流程", "AI / Agent"],
-  [/llm|gpt|chatgpt|claude|qwen|deepseek|gemini|inference|vllm|ollama/i, "大模型推理 / 本地跑模型 / 模型服务", "AI / 大模型"],
-  [/\brag\b|ragflow|embedding|vector|pinecone|milvus|chroma|faiss/i, "向量检索与 RAG 知识库，让模型查自己的资料", "RAG / 向量库"],
-  [/diffusion|stable[- ]?diffusion|image[- ]?gen|comfyui|\bflux\b|sdxl|midjourney/i, "AI 文生图 / 图像生成与工作流", "AI 绘图"],
-  [/\btts\b|\bvoice\b|speech|whisper|\baudio\b|\basr\b|\bmusic\b|\bsing\b|sing-box/i, "语音合成 / 语音识别 / 音频处理", "音频语音"],
-  [/video|ffmpeg|subtitle|animation|remotion|剪辑|剪映/i, "视频处理、字幕与自动剪辑", "视频处理"],
-  [/docker|kubernetes|k8s|helm|compose|container/i, "容器与容器编排，部署运维基础设施", "容器 / 运维"],
-  [/nginx|proxy|reverse|tunnel|frp|wireguard|vpn|clash|sing-?box|v2ray|xray/i, "网络代理 / 内网穿透 / 反向代理", "网络代理"],
-  [/monitor|prometheus|grafana|observab|uptime[- _]?monitor|alertmanager/i, "监控告警、指标采集与日志观察", "监控运维"],
-  [/\bnas\b|home[- ]?assistant|homelab|self[- ]?host|dashboard|unraid/i, "自托管 / 家庭服务器 / NAS 面板类工具", "自托管"],
-  [/scrap|crawl|spider|puppeteer|playwright|selenium|browser/i, "网页抓取与浏览器自动化", "爬虫自动化"],
-  [/chrome|extension|userscript|tampermonkey|油猴/i, "浏览器扩展 / 油猴脚本，网页增强", "浏览器扩展"],
-  [/macos|swiftui|\bios\b|iphone|uikit|app store/i, "Apple 平台（macOS / iOS）应用或工具", "Apple 生态"],
-  [/\bmagisk\b|\bxposed\b|\bfrida\b|刷机|免root|root权限|android.*(逆向|破解|改机|去广告|脱壳|hook|magisk|xposed|frida|adb shell|root)|\badb\b.*(shell|push|pull|fastboot|设备|device)/i, "安卓系统改造、免 root / root 工具链", "安卓逆向"],
-  [/decompil|disassembl|ghidra|\bida\b|kernel exploit|\bpwn\b|reversing|逆向/i, "逆向工程 / 二进制分析与漏洞研究", "逆向分析"],
-  [/crypto|bitcoin|ethereum|blockchain|web3|钱包|wallet/i, "区块链 / 加密钱包相关", "区块链"],
-  [/sql|database|postgres|mysql|sqlite|redis|mongo|\borm\b/i, "数据库与数据存储层的工具/客户端", "数据库"],
-  [/terminal|\bshell\b|\bcli\b|\btui\b|command[- ]line/i, "命令行 / TUI 终端增强工具", "命令行工具"],
-  [/editor|vim|neovim|emacs|\bide\b|code[- ]?editor/i, "代码编辑器 / 开发环境", "编辑器 IDE"],
-  [/(?<![a-z0-9-])ui\b(?![-.])|component|tailwind|\breact\b|\bvue\b|svelte|frontend|\bcss\b|design system/i, "前端 UI 组件库 / 设计系统", "前端 UI"],
-  [/\be2e\b|cypress|jest|vitest|test-framework|testing-framework/i, "测试框架与质量保障", "测试工程"],
-  [/\bci\b|continuous (delivery|integration)|pipeline|github action|devops|ci\/cd/i, "CI/CD 与自动化部署流程", "CI/CD"],
-  [/security|exploit|vulnerab|\bcve\b|pentest|malware|\bav\b|免杀|\bhack(ing|er)?\b|hackthebox|渗透|漏洞/i, "安全攻防 / 漏洞利用 / 恶意样本研究", "安全攻防"],
-  [/game|emulator|retro|steam|游戏/i, "游戏相关工具 / 模拟器 / 游戏资源", "游戏"],
-  [/download|magnet|torrent|\bbt\b|网盘|baidu|onedrive|aliyun/i, "下载 / 网盘 / 磁力资源管理", "下载网盘"],
-  [/translate|i18n|字幕|translat/i, "翻译与多语言支持", "翻译"],
-  [/\bpdf\b|\bocr\b|\bscan(n(ing|er))?\b|文字识别|识别文字/i, "OCR 文字识别与扫描件解析", "OCR"],
-  [/proxy|中转|forward/i, "API 转发与请求中转", "中转转发"],
-];
+// 规则表与 ruleDigest 抽到 lib/rules.mjs（纯函数，可被 bun test 直接 import）。
+// 三份规则表的同步约束见 AGENTS.md：本文件唯一定义在 lib/rules.mjs，
+// scripts/import_mcp_cache.py 的 TAGS 与 public/app.js 的 rulePreview 仍需人工对齐。
 
-function ruleDigest(r) {
-  const hay = [r.description, (r.topics || []).join(" "), r.name, r.language].filter(Boolean).join(" ");
-  const hits = [];
-  for (const [re, sentence, tag] of RULES) if (re.test(hay)) hits.push({ sentence, tag });
-  const tagSet = [...new Set(hits.map((h) => h.tag))].slice(0, 3);
-  const sentences = hits.slice(0, 2).map((h) => h.sentence);
-  const zh = (r.description || "").trim();
-  const hasCJK = /[\u4e00-\u9fa5]/.test(zh);
-  const head = sentences.length
-    ? (hasCJK ? `【${tagSet.join(" / ")}】${zh.slice(0, 130)}` : sentences.join("；") + "。")
-    : zh
-      ? "用途：" + zh.slice(0, 120) + (zh.length > 120 ? "…" : "")
-      : "暂无描述，点开右侧 README 看原文。";
-  const tail = `${r.language || "未知语言"} · ⭐ ${fmt(r.stars)} · 最后推送 ${(r.pushed_at || "").slice(0, 10)}`;
-  return { digest: `${head}\n${tail}`, tags: tagSet };
-}
 const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k" : String(n ?? 0));
 
 /* ---------------------------------------------------------------- 入库 */
+// 注意：branch 用 COALESCE(NULLIF(...)) —— 同步这趟可能没带 default_branch
+// （部分接口裁剪过字段），空值不能把上次记下的分支冲掉，否则 fork 对比会退回猜 "main"。
 const upsertRepo = db.prepare(`
 INSERT INTO repos (id, full_name, owner, name, html_url, description, homepage, language, topics,
   stars, forks, issues, watchers, size_kb, license, archived, is_fork, created_at, pushed_at,
-  starred_at, source, fetched_at)
+  starred_at, source, branch, fetched_at)
 VALUES ($id,$full_name,$owner,$name,$html_url,$description,$homepage,$language,$topics,
   $stars,$forks,$issues,$watchers,$size_kb,$license,$archived,$is_fork,$created_at,$pushed_at,
-  $starred_at,$source,$fetched_at)
+  $starred_at,$source,$branch,$fetched_at)
 ON CONFLICT(id) DO UPDATE SET
   full_name=excluded.full_name, owner=excluded.owner, name=excluded.name,
   html_url=excluded.html_url, description=excluded.description, homepage=excluded.homepage,
@@ -496,7 +566,8 @@ ON CONFLICT(id) DO UPDATE SET
   license=excluded.license, archived=excluded.archived, is_fork=excluded.is_fork,
   created_at=excluded.created_at, pushed_at=excluded.pushed_at,
   starred_at=COALESCE(excluded.starred_at, repos.starred_at),
-  source=excluded.source, fetched_at=excluded.fetched_at
+  source=excluded.source, fetched_at=excluded.fetched_at,
+  branch=COALESCE(NULLIF(excluded.branch,''), repos.branch)
 `);
 
 const tagByName = (name) => {
@@ -534,6 +605,9 @@ function normalize(r, source, starredAt) {
     pushed_at: r.pushed_at || "",
     starred_at: starredAt || null,
     source,
+    // 默认分支：fork 对比的 compare 两端都要写 owner:branch，缺它就比不了。
+    // 这里顺手落库，避免每个 fork 再单独打一次 /repos/:full_name。
+    branch: r.default_branch || "",
     fetched_at: now(),
   };
 }
@@ -846,7 +920,7 @@ const PAGE_ALIAS = { "/login": "login.html", "/themes": "themes.html" };
 const ASSET_FILES = new Set([
   "login.html", "login.js",
   "themes.html", "themes.css", "themes.js",
-  "app.css", "app.js", "favicon.ico",
+  "app.css", "app.js", "md.js", "ai.js", "favicon.ico",
 ]);
 
 const json = (obj, status = 200) =>
@@ -882,9 +956,11 @@ function serveStatic(pathname) {
   });
 }
 
-const UPDATABLE = new Set(["digest", "homepage"]);
+// note 与 digest 语义不同：digest 是「这是什么」，note 是「我为什么留它」。
+// 两个都允许手改；只有 digest 会带 digest_src='manual'，note 不参与来源判定。
+const UPDATABLE = new Set(["digest", "homepage", "note"]);
 
-function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", scope = "all", limit = 5000 }) {
+function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", scope = "all", view = "", limit = 5000 }) {
   // limit 来自查询参数，直接拼进 SQL 会得到 LIMIT NaN（实测 500 no such column: NaN），
   // 超大值还会拖出全表。收敛成 1..2000 的有限整数。
   limit = Math.min(2000, Math.max(1, Math.trunc(Number(limit)) || 500));
@@ -901,15 +977,31 @@ function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", sc
     // 默认「全部」视图不掺发现页收编的临时仓库，只在我明确点「发现过的」时出现
     where.push("r.source != 'discover'");
   }
+  // 视图过滤：待读 / 已放弃 / 停滞。三个都是 r 表上的标志位或时间，不需要额外 join。
+  if (view === "toread") where.push("r.toread = 1 AND r.dropped = 0");
+  else if (view === "dropped") where.push("r.dropped = 1");
+  else if (view === "stale") {
+    // 归档或 180 天没推送。和 lib/insight.mjs 的 stagnation() 用同一判据，
+    // 服务端用 SQL 是为了能在库内直接过滤 228 条，不必全拉回内存。
+    // 必须排除已放弃的：/api/status 的 viewCount.stale 就是这么算的，
+    // 这边漏了会出现「侧栏写 12、点进去 15 个」。
+    where.push("COALESCE(r.dropped,0) = 0 AND (r.archived = 1 OR (r.pushed_at IS NOT NULL AND r.pushed_at != '' AND r.pushed_at < ?))");
+    args.push(new Date(Date.now() - 180 * 86400000).toISOString());
+  } else {
+    // 其他视图默认不显示已放弃的（它们只在「已放弃」里出现）
+    where.push("COALESCE(r.dropped,0) = 0");
+  }
   if (lang) { where.push("r.language = ?"); args.push(lang); }
   if (tag) {
-    where.push("r.id IN (SELECT rt.repo_id FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE t.name=?)");
-    args.push(tag);
+    // 点父标签要能带出子标签下的仓库，否则两级分组等于白做
+    where.push(`r.id IN (SELECT rt.repo_id FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id
+      WHERE t.name=? OR t.parent=?)`);
+    args.push(tag, tag);
   }
   if (q.trim()) {
-    where.push("(r.full_name LIKE ? OR r.description LIKE ? OR r.digest LIKE ? OR r.topics LIKE ?)");
+    where.push("(r.full_name LIKE ? OR r.description LIKE ? OR r.digest LIKE ? OR r.topics LIKE ? OR r.note LIKE ?)");
     const like = `%${q.trim()}%`;
-    args.push(like, like, like, like);
+    args.push(like, like, like, like, like);
   }
   const orderMap = {
     stars: "r.stars DESC",
@@ -1062,24 +1154,44 @@ const server = Bun.serve({
         // 侧栏「已隐藏」的计数：前端一直在读 counts.hidden，服务端却没给过
         bySource.hidden = db.query("SELECT COUNT(*) n FROM hidden").get()?.n || 0;
         const tags = db.query(`
-          SELECT t.id, t.name, t.kind, t.color, COUNT(rt.repo_id) n
+          SELECT t.id, t.name, t.kind, t.color, t.parent, COUNT(rt.repo_id) n
           FROM tags t LEFT JOIN repo_tags rt ON rt.tag_id=t.id
-          GROUP BY t.id ORDER BY n DESC, t.name`).all();
+          GROUP BY t.id ORDER BY COALESCE(t.parent,''), n DESC, t.name`).all();
         const langs = db.query(`
           SELECT language, COUNT(*) n FROM repos
           WHERE language != '' AND id NOT IN (SELECT repo_id FROM hidden)
           GROUP BY language ORDER BY n DESC LIMIT 40`).all();
+        // 视图计数：待读 / 已放弃 / 停滞。前端侧栏要显示数字，后端一次给全。
+        // 判据与 repoList 的 view 过滤、lib/insight.mjs 的 stagnation 保持一致。
+        const staleBefore = new Date(Date.now() - 180 * 86400000).toISOString();
+        const viewCount = db.query(`
+          SELECT
+            SUM(CASE WHEN toread = 1 AND COALESCE(dropped,0) = 0 THEN 1 ELSE 0 END) AS toread,
+            SUM(CASE WHEN dropped = 1 THEN 1 ELSE 0 END) AS dropped,
+            SUM(CASE WHEN COALESCE(dropped,0) = 0 AND (archived = 1 OR (pushed_at IS NOT NULL AND pushed_at != '' AND pushed_at < ?)) THEN 1 ELSE 0 END) AS stale
+          FROM repos WHERE id NOT IN (SELECT repo_id FROM hidden)`).get(staleBefore) || {};
         return json({
           login: getMeta("login"),
           authed: !!sessionInfo(req),
           token_source: ENV_TOKEN ? "env" : runtimeToken ? "login" : "none",
           token: currentToken() ? "已配置" : "未配置（匿名 60 次/小时）",
           rate,
-          counts: { starred: bySource.starred || 0, fork: bySource.fork || 0, discover: bySource.discover || 0, hidden: bySource.hidden || 0 },
+          counts: {
+            starred: bySource.starred || 0,
+            fork: bySource.fork || 0,
+            discover: bySource.discover || 0,
+            hidden: bySource.hidden || 0,
+            toread: viewCount.toread || 0,
+            dropped: viewCount.dropped || 0,
+            stale: viewCount.stale || 0,
+          },
           stars_synced_at: getMeta("stars_synced_at"),
           forks_synced_at: getMeta("forks_synced_at"),
           releases_checked_at: getMeta("releases_checked_at"),
           sync: syncState,
+          // 前端据此决定抽屉里显示「问 AI」输入框还是「去配置」引导
+          ai_enabled: getAiConfig().enabled,
+          ai_model: getAiConfig().model,
           tags,
           langs,
           recent_events: db.query("SELECT * FROM events ORDER BY id DESC LIMIT 20").all(),
@@ -1101,8 +1213,173 @@ const server = Bun.serve({
           row = await adoptRepo(id);
           if (!row) return json({ error: "not found" }, 404);
         }
-        return json({ ...row, tags: (db.query(
-          "SELECT t.name, t.kind FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE rt.repo_id=?", ).all(id)) });
+        // 记一次打开：清理建议要靠 open_count 判断「收藏了却从没看过」。
+        // 只累加，不做去重——同一天反复看也是「关注过」的证据。
+        db.query("UPDATE repos SET open_count=COALESCE(open_count,0)+1, opened_at=COALESCE(opened_at,?) WHERE id=?")
+          .run(now(), id);
+        const tags = db.query(
+          "SELECT t.name, t.kind FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE rt.repo_id=?", ).all(id);
+        // 相似仓库：同库内算加权 Jaccard，纯粹为「还可能有这些」的推荐位。
+        // 标签一次查全再按 repo_id 分组——早先每个仓库单独查一次，228 个库就是
+        // 228 条 SQL，抽屉每次打开都全表扫一遍。
+        const all = db.query("SELECT id, full_name, owner, language, topics, description, stars FROM repos").all();
+        const tagByRepo = new Map();
+        for (const t of db.query("SELECT rt.repo_id, t.name FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id").all()) {
+          if (!tagByRepo.has(t.repo_id)) tagByRepo.set(t.repo_id, []);
+          tagByRepo.get(t.repo_id).push(t.name);
+        }
+        const sims = similarTo({ ...row, tags: tags.map((t) => t.name) },
+          all.map((x) => ({ ...x, tags: tagByRepo.get(x.id) || [] })), 5);
+        return json({
+          ...row,
+          open_count: (row.open_count || 0) + 1,
+          tags,
+          stagnation: stagnation(row),
+          fork_lag: row.fork_behind != null ? { behind: row.fork_behind, ahead: row.fork_ahead || 0 } : null,
+          similar: sims,
+        });
+      }
+
+      /* ---- 仓库标记：待读 / 放弃 / 备注 ---- */
+      if (p === "/api/repo/flag" && req.method === "POST") {
+        const b = await req.json();
+        const id = Number(b.id);
+        if (!id) return json({ error: "bad id" }, 400);
+        const exists = db.query("SELECT id FROM repos WHERE id=?").get(id);
+        if (!exists) return json({ error: "not found" }, 404);
+        if (b.toread !== undefined) db.query("UPDATE repos SET toread=? WHERE id=?").run(b.toread ? 1 : 0, id);
+        if (b.dropped !== undefined) {
+          db.query("UPDATE repos SET dropped=?, dropped_at=? WHERE id=?")
+            .run(b.dropped ? 1 : 0, b.dropped ? now() : null, id);
+        }
+        const row = db.query("SELECT id, toread, dropped, dropped_at, note FROM repos WHERE id=?").get(id);
+        return json({ ok: true, ...row });
+      }
+
+      /* ---- fork 落后对比（真打 GitHub compare 接口）---- */
+      if (p === "/api/fork/compare" && req.method === "POST") {
+        const b = await req.json().catch(() => ({}));
+        const limit = Math.min(50, Math.max(1, Number(b.limit) || 50));
+        // 只比没比过的，或用户显式要求重算的
+        const rows = b.force
+          ? db.query("SELECT * FROM repos WHERE is_fork=1 LIMIT ?").all(limit)
+          : db.query("SELECT * FROM repos WHERE is_fork=1 AND fork_checked_at IS NULL LIMIT ?").all(limit);
+        const out = [];
+        for (const r of rows) {
+          // upstream 形如 owner/repo；归一化时已存好。缺就得先补一次详情，否则没法比。
+          let upstream = r.upstream;
+          let branch = r.branch || "";
+          try {
+            if (!upstream || !branch) {
+              const me = await gh(`/repos/${r.full_name}`);
+              upstream = upstream || me?.parent?.full_name || "";
+              branch = branch || me?.default_branch || "main";
+            }
+            if (!upstream) { out.push({ id: r.id, full_name: r.full_name, error: "拿不到上游仓库" }); continue; }
+            const upName = upstream.split("/")[1];
+            // compare 的两端必须同属一个 fork 网络，所以两端都写成 owner:branch。
+            // base=上游、head=我的 fork：返回的 behind_by 就是「上游有我没合进来的提交数」。
+            const cmp = await gh(
+              `/repos/${r.full_name}/compare/${encodeURIComponent(upstream.split("/")[0])}:${branch}...${encodeURIComponent(r.owner)}:${branch}`
+            );
+            const lag = forkLag(cmp);
+            db.query("UPDATE repos SET fork_behind=?, fork_ahead=?, fork_checked_at=?, branch=COALESCE(branch,?) WHERE id=?")
+              .run(lag.behind ?? null, lag.ahead ?? null, now(), branch, r.id);
+            out.push({ id: r.id, full_name: r.full_name, upstream: `${upstream.split("/")[0]}/${upName}`, ...lag, text: forkLagText(lag) });
+          } catch (e) {
+            out.push({ id: r.id, full_name: r.full_name, error: e.message });
+          }
+        }
+        if (out.some((x) => !x.error)) log("info", `fork 对比完成 ${out.filter((x) => !x.error).length}/${out.length}`);
+        return json({ ok: true, checked: out.length, items: out });
+      }
+
+      /* ---- 智能清理建议：只出清单，绝不自动取消 star ---- */
+      if (p === "/api/cleanup") {
+        const rows = db.query("SELECT * FROM repos WHERE 1=1").all();
+        const cand = cleanupCandidates(rows, Date.now(), {
+          idleDays: Number(u.searchParams.get("idleDays") || 365),
+          neverOpenedDays: Number(u.searchParams.get("neverOpenedDays") || 180),
+        });
+        // 补上给人看的字段，前端不再二次计算
+        const byId = new Map(rows.map((r) => [r.id, r]));
+        return json({
+          count: cand.length,
+          items: cand.map((c) => ({
+            ...c,
+            full_name: byId.get(c.id)?.full_name || c.full_name,
+            html_url: byId.get(c.id)?.html_url,
+            stars: byId.get(c.id)?.stars,
+            pushed_at: byId.get(c.id)?.pushed_at,
+            language: byId.get(c.id)?.language,
+          })),
+          total: rows.length,
+        });
+      }
+
+      /* ---- AI 设置 ---- */
+      if (p === "/api/ai/config") {
+        if (req.method === "GET") return json({ ...getAiConfig(), presets: AI_PRESETS });
+        if (req.method === "POST") {
+          const b = await req.json().catch(() => ({}));
+          const cfg = {
+            enabled: !!b.enabled,
+            base_url: String(b.base_url || "").trim(),
+            model: String(b.model || "").trim(),
+            max_tokens: Number(b.max_tokens) || 2000,
+            temperature: Number.isFinite(Number(b.temperature)) ? Number(b.temperature) : 0.2,
+            extra_prompt: String(b.extra_prompt || ""),
+          };
+          if (cfg.enabled || cfg.base_url || cfg.model) {
+            const errs = validateAiConfig(cfg);
+            if (errs.length) return json({ error: errs.join("；"), errors: errs }, 400);
+          }
+          for (const [k, v] of Object.entries(cfg)) setMeta(`ai_${k}`, v);
+          // key 单独走：不传就不动，传空串才清除。这样前端只改 base_url 时不会把 key 抹掉。
+          if (b.api_key !== undefined) setAiKey(b.api_key);
+          log("info", `AI 配置已更新（${cfg.base_url} / ${cfg.model}）`);
+          return json({ ok: true, ...getAiConfig() });
+        }
+      }
+      if (p === "/api/ai/test" && req.method === "POST") {
+        const cfg = getAiConfig();
+        if (!cfg.base_url || !cfg.model) return json({ error: "先填 base_url 与 model" }, 400);
+        try {
+          const r = await aiChat([{ role: "user", content: "只回复两个字：可用" }], { ...cfg, max_tokens: 20 });
+          return json({ ok: true, reply: r.content.slice(0, 200), model: r.model });
+        } catch (e) {
+          return json({ error: e.message }, 502);
+        }
+      }
+      /* ---- 单仓 AI 对话 ---- */
+      if (p === "/api/ai/chat" && req.method === "POST") {
+        const b = await req.json().catch(() => ({}));
+        const id = Number(b.id);
+        const question = String(b.question || "").trim();
+        if (!id) return json({ error: "bad id" }, 400);
+        if (!question) return json({ error: "问题为空" }, 400);
+        const cfg = getAiConfig();
+        if (!cfg.enabled) return json({ error: "AI 未启用（在「AI 设置」里勾选启用）" }, 400);
+        const row = db.query("SELECT * FROM repos WHERE id=?").get(id);
+        if (!row) return json({ error: "not found" }, 404);
+        const ctx = await aiRepoContext(row);
+        const history = Array.isArray(b.history)
+          ? b.history.filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+              .slice(-8).map((m) => ({ role: m.role, content: m.content.slice(0, 4000) }))
+          : [];
+        const messages = buildMessages(row, history, question, { ...ctx, extraPrompt: cfg.extra_prompt });
+        try {
+          const r = await aiChat(messages, cfg);
+          // 把回答存成 ai_summary：卡片上就能看到「AI 怎么看这库」，不用重开对话
+          if (!getMeta(`ai_sum_${id}`)) setMeta(`ai_sum_${id}`, "1");
+          db.query("UPDATE repos SET ai_summary=? WHERE id=? AND (ai_summary IS NULL OR ai_summary='')")
+            .run(r.content.slice(0, 1200), id);
+          log("info", `AI 对话 ${row.full_name}（${question.slice(0, 30)}）→ ${r.usage?.total_tokens || "?"} tokens`);
+          return json({ ok: true, answer: r.content, usage: r.usage, model: r.model });
+        } catch (e) {
+          log("error", `AI 对话失败 ${row.full_name}：${e.message}`);
+          return json({ error: e.message }, 502);
+        }
       }
 
       const mReadme = p.match(/^\/api\/repo\/(\d+)\/readme$/);
@@ -1116,7 +1393,7 @@ const server = Bun.serve({
         return json({ id: row.id, markdown: md });
       }
 
-      /* ---- 更新简介 ---- */
+      /* ---- 更新简介 / 备注 ---- */
       if (p === "/api/repo/update" && req.method === "POST") {
         const body = await req.json();
         if (typeof body.id !== "number") return json({ error: "bad id" }, 400);
@@ -1125,7 +1402,9 @@ const server = Bun.serve({
           if (UPDATABLE.has(k)) { sets.push(`${k}=?`); args.push(String(body[k] ?? "")); }
         }
         if (!sets.length) return json({ error: "无可更新字段" }, 400);
-        sets.push("digest_src='manual'");
+        // 只有真的改了 digest 才把来源标成 manual。改 note 顺带把 digest 标成 manual，
+        // 会让下一次规则重算不再更新简介（等于悄悄冻结了自动简介）。
+        if (sets.some((s) => s.startsWith("digest="))) sets.push("digest_src='manual'");
         args.push(body.id);
         db.query(`UPDATE repos SET ${sets.join(",")} WHERE id=?`).run(...args);
         return json({ ok: true });
@@ -1133,14 +1412,24 @@ const server = Bun.serve({
 
       /* ---- 标签 CRUD ---- */
       if (p === "/api/tags" && req.method === "GET")
-        return json(db.query("SELECT * FROM tags ORDER BY sort, name").all());
+        // 排序：先按父标签名（空的排最前），再按父标签自身 sort，子标签跟随父标签聚在一起
+        return json(db.query(`
+          SELECT t.* FROM tags t
+          LEFT JOIN tags p ON p.name = t.parent
+          ORDER BY COALESCE(t.parent,''), COALESCE(p.sort, t.sort), t.sort, t.name`).all());
       if (p === "/api/tags" && req.method === "POST") {
         const b = await req.json();
         const name = String(b.name || "").trim();
         if (!name) return json({ error: "标签名为空" }, 400);
         const exist = db.query("SELECT * FROM tags WHERE name=?").get(name);
         if (exist) return json(exist);
-        db.query("INSERT INTO tags (name, color, kind) VALUES (?,?,?)").run(name, b.color || null, b.kind || "manual");
+        // parent：带父标签名就挂到它下面（两级分组），父标签不存在时静默忽略，
+        // 否则一个拼错的父名会让整个创建请求失败，用户看不出原因。
+        let parent = String(b.parent || "").trim() || null;
+        if (parent && !db.query("SELECT id FROM tags WHERE name=?").get(parent)) parent = null;
+        if (parent === name) parent = null;
+        db.query("INSERT INTO tags (name, color, kind, parent) VALUES (?,?,?,?)")
+          .run(name, b.color || null, b.kind || "manual", parent);
         return json(db.query("SELECT * FROM tags WHERE name=?").get(name));
       }
       const mTag = p.match(/^\/api\/tags\/(\d+)$/);
@@ -1155,6 +1444,13 @@ const server = Bun.serve({
           const b = await req.json();
           if (b.name) db.query("UPDATE tags SET name=? WHERE id=?").run(String(b.name).trim(), id);
           if (b.color !== undefined) db.query("UPDATE tags SET color=? WHERE id=?").run(b.color, id);
+          if (b.parent !== undefined) {
+            // 允许置空（移回顶层）；不允许自己当自己的父标签
+            const cur = db.query("SELECT name FROM tags WHERE id=?").get(id);
+            const parent = String(b.parent || "").trim() || null;
+            db.query("UPDATE tags SET parent=? WHERE id=?")
+              .run(parent && parent !== cur?.name ? parent : null, id);
+          }
           return json({ ok: true });
         }
       }

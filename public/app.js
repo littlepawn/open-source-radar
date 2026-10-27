@@ -50,6 +50,10 @@ const ago = (iso) => {
 const state = {
   scope: "all",
   view: "repos",
+  // 列表过滤器（待读 / 停滞 / 已放弃）。和 view 分开：view 决定「显示哪块面板」，
+  // filter 决定「同一块列表里筛什么」。早先混用导致 data-view="toread" 走到
+  // showView 里找不到对应面板，整页 hidden 全白。
+  filter: "",
   q: "",
   tag: "",
   lang: "",
@@ -68,17 +72,25 @@ function renderSide() {
   $("#nFork").textContent = st.counts?.fork || 0;
   $("#nHide").textContent = st.counts?.hidden || 0;
   $("#nDisc").textContent = st.counts?.discover || 0;
-  $("#nDisc").textContent = st.counts?.discover || 0;
+  // 待办与体检的四个计数：后端一次算好，前端只负责摆，别各算一套
+  const c = st.counts || {};
+  if ($("#nToread")) $("#nToread").textContent = c.toread || 0;
+  if ($("#nStale")) $("#nStale").textContent = c.stale || 0;
+  if ($("#nDropped")) $("#nDropped").textContent = c.dropped || 0;
   const tags = st.tags || [];
   state.tags = tags;
   $("#tagCount").textContent = tags.length ? `${tags.length}` : "";
   const maxN = Math.max(1, ...tags.map((t) => t.n));
+  // 两级标签：后端已按「父在前、子紧随」排好序，这里只加缩进。
+  // 子标签的 n 是它自己挂的仓库数，不含父标签的——点父标签时后端会把子标签一起算进去。
   $("#tagList").innerHTML = tags
     .filter((t) => t.n > 0)
-    .map(
-      (t) => `<button class="chip ${state.tag === t.name ? "active" : ""}" data-tag="${esc(t.name)}"
-        ${t.color ? `data-color="${esc(t.color)}"` : ""}>${esc(t.name)}<b>${t.n}</b></button>`
-    )
+    .map((t) => {
+      const child = t.parent ? " chip-sub" : "";
+      const title = t.parent ? ` title="属于「${esc(t.parent)}」"` : "";
+      return `<button class="chip${child} ${state.tag === t.name ? "active" : ""}" data-tag="${esc(t.name)}"${title}
+        ${t.color ? `data-color="${esc(t.color)}"` : ""}>${esc(t.name)}<b>${t.n}</b></button>`;
+    })
     .join("") || `<span class="minihint">同步后自动归类</span>`;
   $("#langList").innerHTML = (st.langs || [])
     .slice(0, 14)
@@ -110,9 +122,13 @@ function cardHTML(r, ctx = "repo") {
       ${r.archived || r.arch ? '<span class="badge arch">归档</span>' : ""}
       ${r.language ? `<span class="badge">${esc(r.language)}</span>` : ""}
       ${hidden ? '<span class="badge arch">隐藏</span>' : ""}
+      ${r.toread ? '<span class="badge todo">待读</span>' : ""}
+      ${r.dropped ? '<span class="badge arch">已放弃</span>' : ""}
+      ${r.fork_behind > 0 ? `<span class="badge warn" title="上游有 ${r.fork_behind} 个提交没合进来">落后 ${r.fork_behind}</span>` : ""}
     </div>
     ${head ? `<div class="digest">${esc(head)}${tail ? `<span class="stat">${esc(tail)}</span>` : ""}</div>`
            : `<div class="desc">${esc(r.description || "（无描述）")}</div>`}
+    ${r.note ? `<div class="note" title="我的备注">✎ ${esc(r.note)}</div>` : ""}
     ${tags.length ? `<div class="rowtags">${tags.map((t) => `<button class="chip" data-tag="${esc(t)}" data-stop>${esc(t)}</button>`).join("")}</div>` : ""}
     <div class="foot">
       <span>★ ${fmt(r.stars)}</span>
@@ -130,11 +146,15 @@ async function loadRepos() {
   const q = new URLSearchParams({ q: state.q, source: state.scope, tag: state.tag, lang: state.lang, sort: state.sort });
   if (state.scope === "hidden") q.set("source", "hidden");
   if (state.scope === "discover") q.set("source", "discover");
+  // 待读 / 停滞 / 已放弃：走服务端的 view 过滤，不在这儿再筛一遍
+  if (state.filter) q.set("view", state.filter);
   const d = await api("/api/repos?" + q.toString());
   state.items = d.items || [];
   $("#cards").innerHTML = state.items.map((r) => cardHTML(r)).join("");
   $("#empty").hidden = state.items.length > 0;
   const bits = [`<b>${state.items.length}</b> 个仓库`];
+  const FILTER_LABEL = { toread: "待读队列", stale: "停滞超半年", dropped: "已放弃" };
+  if (state.filter) bits.push(`视图 <b>${FILTER_LABEL[state.filter] || state.filter}</b>`);
   if (state.tag) bits.push(`标签 <b>${esc(state.tag)}</b>`);
   if (state.lang) bits.push(`语言 <b>${esc(state.lang)}</b>`);
   if (state.q) bits.push(`关键词 <b>${esc(state.q)}</b>`);
@@ -160,6 +180,7 @@ async function openRepo(id) {
     <h2><a href="${esc(r.html_url)}" target="_blank" rel="noreferrer">${esc(r.full_name)}</a></h2>
     <div class="meta">⭐ ${fmt(r.stars)} · ⑂ ${fmt(r.forks)} · ${esc(r.language || "—")} · ${esc(r.license || "无协议")}
       · 最后推送 ${ago(r.pushed_at)}${r.archived ? " · 已归档" : ""}${r.upstream ? ` · fork 自 <a href="https://github.com/${esc(r.upstream)}" target="_blank" rel="noreferrer">${esc(r.upstream)}</a>` : ""}${safeUrl(r.homepage) ? ` · <a href="${esc(safeUrl(r.homepage))}" target="_blank" rel="noreferrer">主页</a>` : ""}</div>
+    ${statusLine(r)}
     <div class="sec">
       <label>我的中文简介（保存后不会被自动规则覆盖）</label>
       <textarea id="digEdit">${esc(r.digest || "")}</textarea>
@@ -180,10 +201,20 @@ async function openRepo(id) {
       <div class="rowtags">${topics.map((t) => `<span class="chip">${esc(t)}</span>`).join("") || '<span class="minihint">无</span>'}</div>
     </div>
     <div class="sec">
+      <label>我的备注（这个库我当时想拿它做什么）</label>
+      <textarea id="noteEdit" rows="3" placeholder="例如：打算接进看山工具的同步链路；先观望 2.0">${esc(r.note || "")}</textarea>
+      <div class="btnrow"><button class="primary" id="noteSave">保存备注</button>
+        <span class="minihint">备注会显示在卡片上，搜索也能搜到</span></div>
+    </div>
+    <div class="sec">
       <label>README</label>
       <div class="readme" id="readmeBox">加载中…</div>
     </div>
+    ${similarBlock(r)}
+    ${aiBlock(r)}
     <div class="sec btnrow">
+      <button class="ghost" id="toreadBtn">${r.toread ? "移出待读" : "加入待读"}</button>
+      <button class="ghost" id="dropBtn">${r.dropped ? "取消放弃标记" : "标记放弃"}</button>
       <button class="ghost" id="hideBtn">${r.hidden ? "恢复显示" : "隐藏该项目"}</button>
       <button class="ghost" id="starBtn">${r.source === "fork" ? "打开 Fork 源" : "去 GitHub 取消/加 Star"}</button>
     </div>`;
@@ -240,6 +271,67 @@ async function openRepo(id) {
   };
   $("#starBtn").onclick = () => window.open(r.html_url, "_blank", "noreferrer");
 
+  $("#noteSave").onclick = async () => {
+    const note = $("#noteEdit").value.trim();
+    await api("/api/repo/update", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ id: r.id, note }),
+    });
+    toast("备注已保存");
+    await refresh(false);
+  };
+
+  // 待读 / 放弃：只改标记，抽屉内容就地更新，不重开（重开会把 README 重拉一遍）
+  const flag = async (patch) => {
+    try {
+      const d = await api("/api/repo/flag", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: r.id, ...patch }),
+      });
+      Object.assign(r, d);
+      $("#toreadBtn").textContent = r.toread ? "移出待读" : "加入待读";
+      $("#dropBtn").textContent = r.dropped ? "取消放弃标记" : "标记放弃";
+      await refresh(false);
+    } catch (e) { toast("操作失败：" + e.message, true); }
+  };
+  $("#toreadBtn").onclick = () => flag({ toread: !r.toread });
+  $("#dropBtn").onclick = () => flag({ dropped: !r.dropped });
+
+  const ask = async () => {
+    const q = $("#aiQ").value.trim();
+    if (!q) return;
+    const box = $("#aiChat");
+    $("#aiQ").value = "";
+    aiState.history.push({ role: "user", content: q });
+    box.insertAdjacentHTML("beforeend", `<div class="msg user">${esc(q)}</div><div class="msg assistant pending">思考中…</div>`);
+    $("#aiChatHint").textContent = "已把 README 与关键文件交给模型，首次通常 5-20 秒";
+    $("#aiAsk").disabled = true;
+    try {
+      const d = await api("/api/ai/chat", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: r.id, question: q, history: aiState.history.slice(0, -1) }),
+      });
+      aiState.history.push({ role: "assistant", content: d.answer });
+      box.querySelector(".pending")?.remove();
+      box.insertAdjacentHTML("beforeend", `<div class="msg assistant">${RadarMD.markdown(d.answer)}</div>`);
+      $("#aiChatHint").textContent = d.usage ? `本次 ${d.usage.total_tokens} tokens · ${d.model}` : "";
+      box.scrollTop = box.scrollHeight;
+    } catch (e) {
+      box.querySelector(".pending")?.remove();
+      box.insertAdjacentHTML("beforeend", `<div class="msg err">失败：${esc(e.message)}</div>`);
+      $("#aiChatHint").textContent = "";
+    } finally {
+      $("#aiAsk").disabled = false;
+    }
+  };
+  const askBtn = $("#aiAsk");
+  if (askBtn) askBtn.onclick = ask;
+  const aiQ = $("#aiQ");
+  if (aiQ) aiQ.onkeydown = (e) => { if (e.key === "Enter") ask(); };
+
   // README
   try {
     const md = await api(`/api/repo/${id}/readme`);
@@ -251,6 +343,56 @@ async function openRepo(id) {
     $("#readmeBox").textContent = "README 读取失败：" + e.message;
   }
 }
+
+/* 抽屉里那行「这库现在什么状态」：打开过几次、多久没动、fork 落后多少。
+   数据来自 /api/repo/:id 的 open_count / stagnation / fork_lag，前端只做展示不做判断，
+   免得和 lib/insight.mjs 的判据跑偏成第二套。 */
+function statusLine(r) {
+  const bits = [];
+  if (r.open_count) bits.push(`打开 ${r.open_count} 次`);
+  // 必须判 stale：stagnation() 无论如何都返回对象，只看「有没有对象」会把
+  // 昨天刚推送的仓库也标成停滞。文案用 reason，那是后端算好的可读结论。
+  if (r.stagnation?.stale) bits.push(`<span class="warn">⏸ ${esc(r.stagnation.reason || "停滞")}</span>`);
+  if (r.fork_lag) {
+    if (r.fork_lag.behind > 0) bits.push(`<span class="warn">上游领先 ${r.fork_lag.behind} 个提交</span>`);
+    else if (r.fork_lag.ahead > 0) bits.push(`本地领先上游 ${r.fork_lag.ahead} 个提交`);
+  }
+  if (r.ai_summary) bits.push("已有 AI 结论");
+  return bits.length ? `<div class="statusline">${bits.join(" · ")}</div>` : "";
+}
+
+function similarBlock(r) {
+  const list = r.similar || [];
+  if (!list.length) return "";
+  return `<div class="sec">
+    <label>收藏里还有这些（按语言 / topics / 标签重叠加权）</label>
+    <div class="rowtags">${list.map((x) =>
+      `<button class="chip" data-open="${x.id}" title="${esc(x.full_name)}">${esc(x.full_name.split("/")[1])} · ${Math.round(x.score * 100)}%</button>`).join("")}</div>
+  </div>`;
+}
+
+function aiBlock(r) {
+  if (!(state.status?.ai_enabled)) {
+    return `<div class="sec">
+      <label>问 AI</label>
+      <div class="minihint">还没配 AI。<button class="link" data-view="ai">去填 Base URL / 模型 / Key</button>，配好后这里能直接问这个库的细节。</div>
+    </div>`;
+  }
+  // 一次对话的多轮历史留在 DOM 里，换仓库就重置（key 是 repo id）
+  if (aiState.repoId !== r.id) { aiState.repoId = r.id; aiState.history = []; }
+  return `<div class="sec">
+    <label>问 AI（已带上 README、目录与关键文件）</label>
+    <div class="aichat" id="aiChat">${aiState.history.map((m) =>
+      `<div class="msg ${m.role}">${m.role === "user" ? esc(m.content) : RadarMD.markdown(m.content)}</div>`).join("")}</div>
+    <div class="btnrow">
+      <input id="aiQ" placeholder="例如：生产环境敢用吗，坑在哪？（回车发送）" autocomplete="off" />
+      <button class="primary" id="aiAsk">发送</button>
+    </div>
+    <div class="minihint" id="aiChatHint"></div>
+  </div>`;
+}
+
+const aiState = { repoId: null, history: [] };
 
 function rulePreview(r, topics) {
   const hay = `${r.description || ""} ${topics.join(" ")} ${r.name || ""} ${r.language || ""}`.toLowerCase();
@@ -298,258 +440,14 @@ function rulePreview(r, topics) {
    现在改为：钉住 fenced code → 保护行内 code → 逐行块级解析（标题/列表/引用/表格/HTML 块）
    → 行内解析（图片/链接/加粗/斜体/删除线）→ 白名单放行安全的 HTML 标签。 */
 
-// README 来自外部仓库，放行的 HTML 标签与属性都做白名单，
-// 事件处理器、style、iframe/script 一律丢弃。
-const MD_VOID = new Set(["img", "br", "hr", "input", "wbr", "col"]);
-const MD_BLOCK = new Set([
-  "div", "p", "center", "details", "summary", "table", "thead", "tbody", "tr", "td", "th",
-  "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li", "blockquote", "pre", "code",
-  "a", "b", "i", "strong", "em", "del", "s", "u", "sub", "sup", "small", "br", "hr",
-  "img", "picture", "source", "figure", "figcaption", "kbd", "mark", "span", "section", "article",
-  "video", "audio", "track", "abbr", "time", "nav", "header", "footer", "main",
-]);
-const MD_ATTR = {
-  a: ["href", "title"],
-  img: ["src", "srcset", "alt", "title", "width", "height"],
-  // <picture> 的暗色模式徽章普遍写成 <source srcset=…>，不放行 srcset 会退化成
-  // 一串裸露的 &lt;source …&gt; 文本（mise / llama.cpp 这类 README 都会中招）。
-  source: ["srcset", "media", "type", "sizes", "width", "height"],
-  video: ["src", "poster", "width", "height", "controls", "loop", "muted", "playsinline"],
-  audio: ["src", "controls", "loop"],
-  td: ["colspan", "rowspan"], th: ["colspan", "rowspan"],
-  div: ["align"], p: ["align"], h1: ["align"], h2: ["align"], h3: ["align"],
-  center: ["align"], table: ["align"], span: ["title"],
-};
-// 标签内属性：只留白名单，href/src 再过 safeUrl
-function mdAttrs(tag, raw, base) {
-  const allow = MD_ATTR[tag] || [];
-  const out = [];
-  const re = /([a-zA-Z_:][-a-zA-Z0-9_:.]*)\s*=\s*("([^"]*)"|'([^']*)'|([^\s"'>]+))/g;
-  let m;
-  while ((m = re.exec(raw))) {
-    const name = m[1].toLowerCase();
-    if (!allow.includes(name)) continue;                 // 事件处理器/ style / class 都在这里被丢
-    let val = m[3] ?? m[4] ?? m[5] ?? "";
-    if (name === "href") {
-      // 只放行真能跳转的：绝对 http(s) 与页内锚点。
-      // ./README.zh_CN.md 这类相对链接指向仓库里的另一个文件，本地看板没有它，
-      // 留着 href 点下去只会得到 404 页面，不如当普通文字。
-      if (!/^https?:\/\//i.test(val) && !val.startsWith("#")) continue;
-    }
-    if (name === "src") {
-      if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val) && !/^https?:\/\//i.test(val) && !/^data:image\//i.test(val)) continue;
-      if (/^https?:\/\//i.test(val) || /^data:image\//i.test(val)) { /* 原样放行 */ }
-      else if (base) {
-        // 仓库相对图片（./docs/a.png、/web/logo.png）：改写成 CDN 地址。
-        // 实测本机到 raw.githubusercontent.com / media.githubusercontent.com 抖动极大
-        // （15s 超时约 2/3 失败），jsdelivr 的 gh 通道同样走 @HEAD 指向默认分支，
-        // 实测 0.5-2s 稳定返回。
-        val = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${val.replace(/^\.?\//, "")}`;
-      } else {
-        continue; // 没有 base 就丢弃，避免破图标
-      }
-    }
-    if (name === "srcset") {
-      // srcset 是「url 描述符, url 描述符」，逐个 URL 单独改写相对路径
-      const fixed = String(val).split(",").map((part) => {
-        const seg = part.trim();
-        if (!seg) return "";
-        const [u, ...desc] = seg.split(/\s+/);
-        let nu = u;
-        // 带 scheme（javascript:/vbscript:/file: …）但不是 http(s)/data:image 的，直接丢
-        if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(u) && !/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) return "";
-        if (!/^https?:\/\//i.test(u) && !/^data:image\//i.test(u)) {
-          if (!base) return "";
-          nu = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${u.replace(/^\.?\//, "")}`;
-        }
-        return [nu, ...desc].join(" ");
-      }).filter(Boolean);
-      // 一个 URL 都不剩就整条丢掉，避免出现空的 srcset=""
-      if (!fixed.length) continue;
-      out.push(`${name}="${esc(fixed.join(", "))}"`);
-      continue;
-    }
-    out.push(`${name}="${esc(val)}"`);
-  }
-  return out.length ? " " + out.join(" ") : "";
-}
-
+// README 渲染器已抽到 /md.js（UMD，浏览器与 bun test 共用同一份实现）。
+// 这里只留一层兜底外壳：万一副本被拦截（CSP/离线），退化成转义后的纯文本，
+// 而不是把整块 README 打空白。
 function miniMarkdown(md, base) {
-  // base = "owner/repo"（来自仓库 html_url），相对图片会拼成 raw 地址；不传则丢相对图
-  let src = String(md || "").slice(0, 200000);
-  const stash = [];
-  const save = (html) => `\u0000${stash.push(html) - 1}\u0000`;
-
-  // 1) fenced code 先钉住，避免内部被当成 markdown
-  src = src.replace(/```([\w+-]*)\n?([\s\S]*?)```/g, (_, _lang, code) =>
-    save(`<pre><code>${esc(code.replace(/\s+$/, ""))}</code></pre>`)
-  );
-  // 2) 行内 code 也钉住
-  src = src.replace(/`([^`\n]+)`/g, (_, c) => save(`<code>${esc(c)}</code>`));
-
-  // 2.5) HTML 注释整段丢掉。徽章区常写成 `</a><!--\n  --><a ...>` 用来消除行内空隙，
-  //      不剔除就会被转义成 &lt;!-- 显示在页面上。放在 code 占位之后，代码块里的
-  //      <!-- 示例不会被误删。
-  src = src.replace(/<!--[\s\S]*?-->/g, "");
-
-  // 3) 行内解析：白名单 HTML 先标记，避免被下面当普通文本转义两次
-  const inline = (text) => {
-    const held = [];
-    const hold = (html) => `\u0001${held.push(html) - 1}\u0001`;
-    let t = text;
-    // 放行/清洗 HTML 标签
-    t = t.replace(/<\/?([a-zA-Z][a-zA-Z0-9]*)((?:[^>"']|"[^"]*"|'[^']*')*)>/g, (full, nameRaw, attrs) => {
-      const tag = nameRaw.toLowerCase();
-      if (!MD_BLOCK.has(tag)) return esc(full);
-      const close = full.startsWith("</");
-      if (close) return MD_VOID.has(tag) ? "" : hold(`</${tag}>`);
-      const selfClose = full.endsWith("/>") || MD_VOID.has(tag);
-      const a = mdAttrs(tag, attrs || "", base);
-      // 相对链接的 href 已被 mdAttrs 丢掉，此时 <a> 没有跳转能力，
-      // 再挂 target/rel 只是噪音（空 href 的锚点在浏览器里等同纯文本）
-      const linkExtras = tag === "a" && /\shref="/.test(a) ? ' target="_blank" rel="noreferrer"' : "";
-      const loading = tag === "img" ? ' loading="lazy"' : "";
-      // 相对路径的图片在本地没有 base，src 被 mdAttrs 丢掉后 <img> 只剩一个破图标。
-      // 但响应式图片可以只有 srcset（合法写法），两者都空才丢。
-      if (tag === "img" && !/\ssrc=/.test(a) && !/\ssrcset=/.test(a)) return "";
-      return hold(`<${tag}${a}${loading}${linkExtras}${selfClose ? (MD_VOID.has(tag) ? ">" : " />") : ">"}`);
-    });
-    // 其余内容一律转义；已在上一步转义过的 & 不再二次转义
-    t = t.replace(/&(?![a-zA-Z#][a-zA-Z0-9]*;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-    // 图片（相对路径在本地看板不可用，丢弃）
-    // URL 里允许一层括号，否则 alert(1) 这类内容会把 ) 留在外面
-    const URL_RE = "([^()\\s]*(?:\\([^()\\s]*\\)[^()\\s]*)*)";
-    t = t.replace(new RegExp("!\\[([^\\]]*)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, alt, src2) => {
-      if (!/^https?:\/\//i.test(src2) && !/^data:image\//i.test(src2)) {
-        if (!base) return "";
-        src2 = `https://cdn.jsdelivr.net/gh/${base}@HEAD/${src2.replace(/^\.?\//, "")}`;
-      }
-      return `<img src="${esc(src2)}" alt="${alt}" loading="lazy">`;
-    });
-    // 链接：http(s) 与锚点，其余只留文字
-    t = t.replace(new RegExp("\\[([^\\]]+)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, label, href) => {
-      if (/^https?:\/\//i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noreferrer">${label}</a>`;
-      if (href.startsWith("#")) return `<a class="mdlink" href="${esc(href)}">${label}</a>`;
-      return label;
-    });
-    t = t.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>');
-    t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/__([^_]+)__/g, "<b>$1</b>");
-    t = t.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<i>$2</i>");
-    t = t.replace(/~~([^~]+)~~/g, "<del>$1</del>");
-    t = t.replace(/ {2,}$/gm, "<br>");
-    return t.replace(/\u0001(\d+)\u0001/g, (_, i) => held[Number(i)]);
-  };
-
-  // 4) 逐行块级解析
-  const lines = src.split("\n");
-  const out = [];
-  let list = null; // "ul" | "ol"
-  let inHtmlBlock = 0;
-  const closeList = () => { if (list) { out.push(`</${list}>`); list = null; } };
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const t = line.trim();
-
-    // 钉住的整块内容直接输出
-    if (/^\u0000\d+\u0000$/.test(t)) { closeList(); out.push(t); continue; }
-
-    // HTML 块：<div ...> / </div> 这类独占一行且成对出现的容器
-    // 自闭合写法 <div …/> 不增加块级深度，否则这类标签之后的整篇
-    // 都会滞留在 html 块里（最终 </body> 失配 → 全部当容器内文本）
-    const htmlOpen = t.match(/^<([a-zA-Z][\w-]*)(\s[^>]*)?(\/?)>$/);
-    if (htmlOpen && !MD_VOID.has(htmlOpen[1].toLowerCase()) && !htmlOpen[3]) { inHtmlBlock++; }
-    if (inHtmlBlock > 0) {
-      // GitHub 在 <div align="center"> 里照常渲染 markdown（README 的 # 标题、
-      // 列表都写在容器里），所以块内仍要认标题和列表，纯文本行走行内。
-      const hh = t.match(/^(#{1,6})\s+(.*)$/);
-      if (hh) {
-        out.push(`<h${hh[1].length}>${inline(hh[2])}</h${hh[1].length}>`);
-      } else if (/^[-*+]\s+/.test(t)) {
-        if (list !== "ul") { if (list) out.push(`</${list}>`); out.push("<ul>"); list = "ul"; }
-        out.push(`<li>${inline(t.replace(/^[-*+]\s+/, ""))}</li>`);
-      } else {
-        if (list) { out.push(`</${list}>`); list = null; }
-        out.push(inline(line));
-      }
-      if (/^<\/[a-zA-Z][\w-]*>$/.test(t)) inHtmlBlock--;
-      if (inHtmlBlock === 0) { if (list) { out.push(`</${list}>`); list = null; } out.push("\u0002"); }
-      continue;
-    }
-
-    if (!t) { closeList(); continue; }
-    if (/^<!--/.test(t) || /^-->$/.test(t)) { closeList(); continue; }
-    if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { closeList(); out.push("<hr>"); continue; }
-
-    const h = t.match(/^(#{1,6})\s+(.*)$/);
-    if (h) { closeList(); out.push(`<h${h[1].length}>${inline(h[2])}</h${h[1].length}>`); continue; }
-
-    const bq = t.match(/^>\s?(.*)$/);
-    if (bq) { closeList(); out.push(`<blockquote>${inline(bq[1])}</blockquote>`); continue; }
-
-    const ul = t.match(/^[-*+]\s+(.*)$/);
-    if (ul) {
-      if (list !== "ul") { closeList(); out.push("<ul>"); list = "ul"; }
-      out.push(`<li>${inline(ul[1])}</li>`);
-      continue;
-    }
-    const ol = t.match(/^\d+[.)]\s+(.*)$/);
-    if (ol) {
-      if (list !== "ol") { closeList(); out.push("<ol>"); list = "ol"; }
-      out.push(`<li>${inline(ol[1])}</li>`);
-      continue;
-    }
-
-    // 表格：连续的 | a | b | 行
-    if (/^\|.*\|$/.test(t)) {
-      closeList();
-      const rows = [];
-      while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) { rows.push(lines[i].trim()); i++; }
-      i--;
-      if (rows.length >= 2 && /^\|[\s:|-]+\|$/.test(rows[1])) {
-        const cells = (r) => r.replace(/^\||\|$/g, "").split("|").map((c) => c.trim());
-        const head = cells(rows[0]);
-        const body = rows.slice(2).map(cells);
-        out.push(
-          "<table><thead><tr>" + head.map((c) => `<th>${inline(c)}</th>`).join("") + "</tr></thead><tbody>" +
-          body.map((r) => "<tr>" + r.map((c) => `<td>${inline(c)}</td>`).join("") + "</tr>").join("") +
-          "</tbody></table>"
-        );
-      } else {
-        out.push(`<p>${rows.map((r) => inline(r)).join("<br>")}</p>`);
-      }
-      continue;
-    }
-
-    // 一行里既有块级容器标签又有正文时（`<table>…</table>` 后跟说明、
-    // `<picture>…</picture> <picture>…</picture>` 之类），包 <p> 会产生
-    // <p><table> 这种非法嵌套，浏览器会把 <p> 提前闭合，视觉上多出空行。
-    // 以块级标签开头且整行内部标签都成对的，直接顶格输出。
-    const startsWithBlock = /^<(?:div|p|center|details|summary|table|thead|tbody|tr|td|th|h[1-6]|ul|ol|li|blockquote|pre|picture|figure|section|article)\b/i.test(t);
-    if (startsWithBlock) {
-      const inner = inline(t);
-      const opens = (inner.match(/<(?!\/)([a-zA-Z][\w-]*)/g) || []).length;
-      const closes = (inner.match(/<\/([a-zA-Z][\w-]*)>/g) || []).length +
-                     (inner.match(/<(?:img|br|hr|input|wbr|col)\b[^>]*>/g) || []).length;
-      if (opens > 0 && opens === closes) { out.push(inner); continue; }
-    }
-
-    closeList();
-    out.push(`<p>${inline(t)}</p>`);
-  }
-  closeList();
-
-  let html = out.join("\n");
-  // href 被丢掉的 <a> 没有跳转能力，剥成纯内容（<a href=...> 不受影响）
-  html = html.replace(/<a>([\s\S]*?)<\/a>/g, "$1");
-  // 钉住的内容回填
-  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => stash[Number(i)] ?? "");
-  // 行内保留位回填（inline 内部已处理，这里兜一次跨行的）
-  html = html.replace(/\u0001(\d+)\u0001/g, "");
-  return html;
+  if (globalThis.RadarMD && typeof RadarMD.markdown === "function") return RadarMD.markdown(md, base);
+  return `<pre>${esc(String(md || "")).slice(0, 200000)}</pre>`;
 }
 
-/* ---------------- 发现热门 */
 // 自定义查询框非空时，下拉（排序/时间窗）完全不参与查询构建，
 // 但下拉仍原样显示，用户会以为是「最近活跃 · >200★ + 近1年新建」在生效。
 // 所以把真实生效条件分开写清楚。
@@ -616,6 +514,48 @@ async function loadReleases(check) {
     : `<div class="empty">还没有记录。点上面的按钮检查一次。</div>`;
 }
 
+/* ---------------- 停滞 / 清理建议 / AI 设置 */
+// 停滞视图走的是主列表（#viewRepos），只是多一个 filter。
+// 早先它自己 showView("repos") 又把 state.scope 写成 "stale"——scope 是 source 参数，
+// 之后一搜索就变成 source=stale，查询直接空。
+async function loadStale() {
+  state.filter = "stale";
+  state.scope = "all";
+  state.view = "repos";
+  showView("repos");
+  await loadRepos();
+  if (!$("#staleHint").textContent) {
+    $("#staleHint").textContent = "点右侧按钮可逐个数一下 fork 落后上游多少提交";
+  }
+}
+
+async function loadCleanup(run) {
+  const hint = $("#cleanupHint");
+  if (run) {
+    hint.textContent = "正在算…";
+    $("#cleanupGo").disabled = true;
+  }
+  try {
+    const d = await api("/api/cleanup");
+    if (run) hint.textContent = `共 ${d.total} 个库，${d.count} 个进入候选`;
+    $("#cleanupList").innerHTML = d.items.length
+      ? d.items.map((c) => `<article class="card" data-id="${c.id}" data-ctx="repo">
+          <div class="name"><a href="${esc(c.html_url || "#")}" target="_blank" rel="noreferrer" data-stop>${esc(c.full_name || c.id)}</a>
+            ${c.language ? `<span class="badge">${esc(c.language)}</span>` : ""}
+            <span class="badge warn">${(c.signals || []).length} 条信号</span></div>
+          <div class="desc">${esc((c.signals || []).join(" · ") || "—")}</div>
+          <div class="foot"><span>★ ${fmt(c.stars)}</span><span class="lang">${esc(c.language || "—")}</span>
+            <span>最后推送 ${ago(c.pushed_at)}</span><span class="sp"></span>
+            <button class="act" data-act="open">详情</button></div>
+        </article>`).join("")
+      : `<div class="empty">没有命中清理信号。判定标准：长期没推送、从没打开过、已归档、已放弃——命中两条以上才算候选。</div>`;
+  } catch (e) {
+    hint.textContent = "失败：" + e.message;
+  } finally {
+    if (run) $("#cleanupGo").disabled = false;
+  }
+}
+
 /* ---------------- 通用 */
 let toastTimer;
 function toast(msg, err) {
@@ -637,6 +577,7 @@ async function refresh(reloadList = true) {
 document.addEventListener("click", async (e) => {
   const navScope = e.target.closest("[data-scope]");
   const navView = e.target.closest("[data-view]");
+  const navFilter = e.target.closest("[data-filter]");
   const tagBtn = e.target.closest("[data-tag]");
   const langBtn = e.target.closest("[data-lang]");
   const card = e.target.closest(".card");
@@ -659,23 +600,52 @@ document.addEventListener("click", async (e) => {
     await refresh();
     return;
   }
+  // 相似仓库 chip：直接换抽屉内容
+  const simBtn = e.target.closest("[data-open]");
+  if (simBtn) {
+    $("#drawer").hidden = true;
+    await openRepo(Number(simBtn.dataset.open));
+    return;
+  }
+  // 待读 / 停滞 / 已放弃：同一块主列表换个服务端 view 参数。
+  // 再点一次同一个就取消过滤，回到全部。
+  if (navFilter) {
+    const f = navFilter.dataset.filter;
+    state.filter = state.filter === f ? "" : f;
+    state.scope = "all";
+    state.view = "repos";
+    showView("repos");
+    document.querySelectorAll("[data-filter]").forEach((b) =>
+      b.classList.toggle("active", b.dataset.filter === state.filter));
+    document.querySelectorAll("[data-scope]").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("[data-view]").forEach((b) => b.classList.remove("active"));
+    await refresh();
+    return;
+  }
   if (navScope) {
     state.scope = navScope.dataset.scope;
     state.tag = "";
+    state.filter = "";        // 换分区时清掉待读/停滞过滤，否则列表会莫名少一半
     state.view = "repos";
     showView("repos");
     document.querySelectorAll("[data-scope]").forEach((b) => b.classList.toggle("active", b === navScope));
     document.querySelectorAll("[data-view]").forEach((b) => b.classList.remove("active"));
+    document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
     await refresh();
     return;
   }
   if (navView) {
     state.view = navView.dataset.view;
+    // 进独立面板前把列表过滤器清掉，回来时才不会带着上次的 view 参数
+    state.filter = "";
+    document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
     showView(state.view);
     document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b === navView));
     document.querySelectorAll("[data-scope]").forEach((b) => b.classList.remove("active"));
     if (state.view === "discover") await loadDiscover();
     if (state.view === "releases") await loadReleases(false);
+    if (state.view === "cleanup") await loadCleanup(false);
+    if (state.view === "ai" && window.RadarAI) await RadarAI.reload();
     return;
   }
   if (openBtn) {
@@ -689,9 +659,17 @@ document.addEventListener("click", async (e) => {
 });
 
 function showView(v) {
-  $("#viewRepos").hidden = v !== "repos";
-  $("#viewDiscover").hidden = v !== "discover";
-  $("#viewReleases").hidden = v !== "releases";
+  const map = {
+    repos: "#viewRepos", discover: "#viewDiscover", releases: "#viewReleases",
+    cleanup: "#viewCleanup", ai: "#viewAI",
+  };
+  for (const [k, sel] of Object.entries(map)) {
+    const el = $(sel);
+    if (el) el.hidden = k !== v;
+  }
+  // 停滞不是独立面板，它就是主列表 + 一条工具行
+  const bar = $("#staleBar");
+  if (bar) bar.hidden = state.filter !== "stale";
 }
 
 let qTimer;
@@ -707,9 +685,11 @@ $("#sort").addEventListener("change", async (e) => {
   await loadRepos();
 });
 $("#resetFilters").addEventListener("click", async () => {
-  state.q = ""; state.tag = ""; state.lang = ""; state.scope = "all";
+  state.q = ""; state.tag = ""; state.lang = ""; state.scope = "all"; state.filter = "";
   $("#q").value = "";
   document.querySelectorAll("[data-scope]").forEach((b) => b.classList.toggle("active", b.dataset.scope === "all"));
+  document.querySelectorAll("[data-filter]").forEach((b) => b.classList.remove("active"));
+  document.querySelectorAll("[data-view]").forEach((b) => b.classList.remove("active"));
   showView("repos");
   state.view = "repos";
   await refresh();
@@ -718,6 +698,24 @@ $("#dGo").addEventListener("click", loadDiscover);
 $("#dSort").addEventListener("change", loadDiscover);
 $("#dDays").addEventListener("change", loadDiscover);
 $("#relGo").addEventListener("click", () => loadReleases(true));
+$("#cleanupGo").addEventListener("click", () => loadCleanup(true));
+$("#staleForkGo").addEventListener("click", async () => {
+  const hint = $("#staleHint");
+  hint.textContent = "对比中（每个 fork 一次 compare 调用）…";
+  $("#staleForkGo").disabled = true;
+  try {
+    const d = await api("/api/fork/compare", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ limit: 50 }) });
+    const ok = d.items.filter((x) => !x.error);
+    const behind = ok.filter((x) => x.behind > 0);
+    hint.textContent = `比了 ${ok.length} 个，${behind.length} 个落后上游` +
+      (d.items.length > ok.length ? `（${d.items.length - ok.length} 个失败）` : "");
+    await loadStale();
+  } catch (e) {
+    hint.textContent = "失败：" + e.message;
+  } finally {
+    $("#staleForkGo").disabled = false;
+  }
+});
 $("#expBtn").addEventListener("click", () => window.open("/api/export", "_blank"));
 $("#newTagBtn").addEventListener("click", async () => {
   const name = prompt("新建标签名（之后可在详情里把它挂到任意仓库）");

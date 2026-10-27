@@ -340,3 +340,84 @@ a.link { color: var(--accent-2); }
   font-size: 11.5px; padding: 2px 4px; border-radius: 5px; white-space: nowrap;
 }
 .userbox .out:hover { background: var(--bg-hover); color: var(--danger); }
+
+/* ============ 本次新增视图与抽屉区块 ============ */
+
+/* 侧栏里「待办与体检」用小号 navitem，避免和外层主导航抢视觉重量 */
+.navitem.slim { font-size: 12.5px; padding: 5px 8px; }
+
+/* 卡片上的标记：待读用强调色、落后用告警色。都是 .badge 的变体，
+   颜色走主题变量，暗色/亮色都不用单独覆盖。 */
+.badge.todo { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); }
+.badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, var(--line)); }
+
+/* 备注：和自动简介分开，左侧加一道竖线，扫一眼就知道这句是人写的 */
+.note {
+  font-size: 12.5px; color: var(--text-dim); line-height: 1.6;
+  border-left: 2px solid var(--accent); padding-left: 8px; margin: 6px 0 2px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+
+/* 抽屉顶部的状态行（打开次数 / 停滞 / fork 落后） */
+.statusline {
+  font-size: 12px; color: var(--text-faint); padding: 6px 10px; margin: 10px 0 0;
+  border: 1px dashed var(--line); border-radius: 8px;
+}
+.statusline .warn { color: var(--warn); }
+
+/* 相似仓库：复用 .chip，只是补一点说明行的间距 */
+.rowtags { display: flex; flex-wrap: wrap; gap: 6px; }
+.rowtags .chip { font-size: 12px; }
+
+/* AI 对话区 */
+.aichat { display: flex; flex-direction: column; gap: 8px; max-height: 380px; overflow-y: auto; margin-bottom: 10px; }
+.aichat:empty { display: none; }
+.aichat .msg {
+  font-size: 13px; line-height: 1.7; padding: 8px 11px; border-radius: 10px;
+  max-width: 100%; overflow-wrap: anywhere;
+}
+.aichat .msg.user { background: var(--bg-hover); color: var(--text); align-self: flex-end; max-width: 85%; }
+.aichat .msg.assistant { background: var(--bg-soft); border: 1px solid var(--line); }
+.aichat .msg.assistant.pending { color: var(--text-faint); font-style: italic; }
+.aichat .msg.err { color: var(--danger); border: 1px solid var(--danger); background: transparent; }
+/* AI 回答按 markdown 渲染，复用 README 的排版规则（.readme *）会太大，
+   这里只给小一号的基础排版 */
+.aichat .msg p { margin: 0 0 8px; }
+.aichat .msg p:last-child { margin-bottom: 0; }
+.aichat .msg ul, .aichat .msg ol { margin: 6px 0; padding-left: 20px; }
+.aichat .msg code { font-size: 12px; }
+
+/* 链接式按钮（「去填 Base URL」这种行内跳转） */
+button.link {
+  background: none; border: 0; padding: 0; color: var(--accent-2);
+  font: inherit; cursor: pointer; text-decoration: underline; text-underline-offset: 2px;
+}
+
+/* AI 设置表单 */
+.aipanel { max-width: 720px; }
+.sec-title { font-size: 13.5px; font-weight: 600; color: var(--text); margin: 18px 0 8px; }
+.aiform { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.frow { display: flex; align-items: center; gap: 12px; font-size: 12.5px; color: var(--text-dim); }
+.frow > span { flex: 0 0 118px; text-align: right; }
+.frow > input:not([type="checkbox"]), .frow > select, .frow > textarea {
+  flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--bg-soft); color: var(--text);
+  font: inherit; font-size: 12.5px;
+}
+.frow.col { flex-direction: column; align-items: stretch; gap: 6px; }
+.frow.col > span { text-align: left; }
+.frow > input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+.frow input:focus, .frow select:focus, .frow textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+
+/* 清理建议页的免责说明：不是弹窗，只是一行静态文字 */
+.safetyline { margin: 0 0 12px; padding: 8px 12px; border-left: 2px solid var(--warn); color: var(--text-faint); }
+
+@media (max-width: 860px) {
+  .frow { flex-direction: column; align-items: stretch; gap: 5px; }
+  .frow > span { text-align: left; }
+  .aichat .msg.user { max-width: 100%; }
+}
+
+/* 子标签：缩进 + 弱化边框，靠缩进表达层级，不引入额外色阶 */
+.chip.chip-sub { margin-left: 14px; font-size: 11.8px; opacity: .92; }
+.chip.chip-sub::before { content: "└"; margin-right: 4px; color: var(--text-faint); }
