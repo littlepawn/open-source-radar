@@ -11,27 +11,30 @@ GitHub 收藏（star + fork）本地看板。上位约定见 `../AGENTS.md`。
 
 ## 关键实现约束
 
-- `gh()` 是所有 GitHub 请求的唯一出口，负责 403/429 的 `X-RateLimit-Reset` 等待重试。**不要在别处裸调 fetch 打 GitHub**（README 抓取除外，它需要 raw 响应）。
+- `gh()` 是所有 GitHub 请求的唯一出口，负责 403/429 的分类与 `X-RateLimit-Reset` 等待重试。**不要在别处裸调 fetch 打 GitHub**（README 抓取除外，它需要 raw 响应）。
+- **403 必须读 body 分类**：`Repository access blocked`（TOS 封禁）不是限流，按 900s×3 等下去会谎报「配额用尽」并卡死 15 分钟。现在非限流 403 返回 `{forbidden:true}` 由调用方跳过。
 - 手工改过的简介 `digest_src='manual'`，同步时**不得覆盖**；`applyAutoTags()` 里已有保护，改逻辑时别退回去。
 - 默认只监听 `127.0.0.1`。改 `HOST=0.0.0.0` 属于把个人数据暴露到局域网/公网，需用户明确授权。
 - `/api/star` 会真实写 GitHub。未配 token 时必须返回明确错误，不允许静默成功。
+- **前端受 CSP 约束，禁止内联样式与内联脚本**：`style-src 'self'` 会把 `style="…"` 属性、`<style>` 块整条丢弃且不报错（属性还在 DOM、CSSOM 为空），页面表现为「样式全丢、按钮无效」。样式写 `app.css`，脚本外链到 `public/*.js`。
 
 ## 实测坑（别重复踩）
 
 - **`get_file_contents` 不是 JSON passthrough**：本机 MCP github 版本会走真 git 解析，`owner=user&repo=starred` 一律 404。想拿 starred 列表走 REST。
-- **匿名 GitHub 只有 60 次/小时**：第一次全量同步必须带 token，否则只能拿到最近 150 条左右。
+- **匿名 GitHub 只有 60 次/小时**：第一次全量同步必须带 token。
 - **`Accept: application/vnd.github.star+json` 在没有 user scope 时会 401**，别以为接口挂了。
 - **`[hidden]` 会被 `display:flex` 覆盖**：抽屉用 `hidden` 属性控制显隐，CSS 里必须补 `.drawer[hidden]{display:none!important}`。
-- **标签规则要按具体度排序**：`log`、`test`、`reverse` 这类短词会大面积误判（superpowers→数据库、esphome→数据库）。收紧成 `alertmanager`、`\be2e\b`、`decompil` 之类。
+- **标签规则要按具体度排序**：`log`、`test`、`reverse` 这类短词会大面积误判。收紧成 `alertmanager`、`\be2e\b`、`decompil` 之类。
 - **`python3` 用 urllib 打 GitHub 会 SSL 证书失败**（本机 Python 3.10 缺 CA），改用 `~/.bun/bin/bun -e` 发请求。
-- **滚动条必须主题化**：全局 `::-webkit-scrollbar` 细窄透明边 + `scrollbar-color`，配色走 `--sb-thumb` 变量；侧栏用 `scrollbar-gutter: stable` 防抖动。别让默认宽滚动条裸露。
+- **滚动条必须主题化**：全局 `::-webkit-scrollbar` 细窄透明边 + `scrollbar-color`，配色走 `--sb-thumb` 变量；侧栏用 `scrollbar-gutter: stable` 防抖动。
 - **README 相对锚点 `[#xxx]` 与 badge 语法**会原样裸露方括号，`miniMarkdown` 已补 `(#...)` 和 `[![](...)](...)` 两条替换。
-- **bun:sqlite 命名参数必须带 `$` 前缀绑定**：`prepare("VALUES ($id,$full_name)")` 配 `run({id,full_name})` 会静默绑空 → `NOT NULL constraint failed`。键必须写成 `{$id:..., $full_name:...}`（`saveRepo` 已统一加前缀）。之前 150 条是 Python 写库，没暴露；第一次走 JS upsert 就炸。
+- **bun:sqlite 命名参数必须带 `$` 前缀绑定**：`prepare("VALUES ($id,$full_name)")` 配 `run({id,full_name})` 会静默绑空 → `NOT NULL constraint failed`。键必须写成 `{$id:..., $full_name:...}`。
 - **star+json 里 `repo` 可能为 `null`**（仓库已删/转私有/无权限），paged() 会跳过并 warn，绝不能把包装对象当 repo 写库。
-- **浏览器自动化进程回收**：通用规矩已上移到全局规范「工程纪律 → 浏览器自动化进程必须回收」，此处不重复。本项目只补充现场经验：`agent-browser` 的 headless Chrome 不会自己退，反复调用会累积成几十个进程并吃满 fd（实测 37 个 → `ERR_INSUFFICIENT_RESOURCES`）；报错时的恢复顺序是清残留 → 重启 daemon（删 `~/.agent-browser/default.pid`）→ 换端口 → 改 curl 直连接口验证。
-- **测试必须隔离数据库**：启动脚本支持 `RADAR_DB=/path/radar.db`（完整文件路径）+ `RADAR_GH`（mock API 基址）。没隔离会写进真库（本轮实测污染过，已清理并验证 150 行恢复）。
-- **测试实例用完当场停，并记住它占的端口**：测试端口与正式端口（8788）必须错开，`RADAR_DB` 指向的临时目录**不得位于 `/tmp` 清理范围内**（本轮事故：清理 `/tmp` 删掉了 8890 测试实例的库，实例带病运行，前端 SSE 无限 5s 重连 → 渲染进程 101% CPU 35 分钟拖死整机）。规矩：① 测试实例启动时把 PID 记到 `/tmp/radar-test.pid`；② 验证结束立刻 `kill $(cat /tmp/radar-test.pid)`；③ 清理 `/tmp` 前先 `pgrep -f server.mjs` 确认没有实例引用该路径；④ 只保留一个对外实例。
-- **前端 SSE 必须指数退避**：`EventSource.onerror` 里禁止写死固定间隔重连，否则服务端持续失败时渲染进程会陷入重连风暴。当前实现为 5s→10s→20s→40s 封顶 60s，重连前关闭旧连接。
+- **未登录放行名单要按解解析后的文件名判断**：`/themes` 会 alias 到 `themes.html`，路径本身不以 `.html` 结尾，用正则匹配会被漏掉并 302。现用 `ASSET_FILES` 集合 + `PAGE_ALIAS` 解析。
+- **浏览器自动化进程回收**：通用规矩已上移到全局规范「工程纪律 → 浏览器自动化进程必须回收」，此处不重复。现场经验：`agent-browser` 的 headless Chrome 不会自己退，反复调用会累积成几十个进程并吃满 fd（实测 37 个 → `ERR_INSUFFICIENT_RESOURCES`）；恢复顺序是清残留 → 重启 daemon（删 `~/.agent-browser/default.pid`）→ 换端口 → 改 curl 直连接口验证。
+- **测试必须隔离数据库**：启动脚本支持 `RADAR_DB=/path/radar.db`（完整文件路径）+ `RADAR_GH`（mock API 基址）。没隔离会写进真库。
+- **测试实例用完当场停**：测试端口与正式端口（8788）必须错开，`RADAR_DB` 指向的临时目录不得位于 `/tmp` 清理范围内（曾把测试实例的库删掉，前端 SSE 无限重连 → 渲染进程 101% CPU 35 分钟拖死整机）。规矩：① PID 记到 `/tmp/radar-test.pid`；② 验证结束立刻 kill；③ 清理 `/tmp` 前先 `pgrep -f server.mjs` 确认；④ 只保留一个对外实例。
+- **前端 SSE 必须指数退避**：`EventSource.onerror` 里禁止写死固定间隔重连。当前实现 5s→10s→20s→40s 封顶 60s，重连前关闭旧连接。
 
 ## 验证方式
 
@@ -46,5 +49,4 @@ agent-browser set viewport 420 900     # 移动端回归
 agent-browser screenshot /tmp/x.png
 ```
 
-验收判据：`/api/status` 的 `counts` 非零、卡片数 = `counts.starred + counts.fork`、
-抽屉能出 README、窄视口下 `document.documentElement.scrollWidth === clientWidth`（无横向溢出）。
+验收判据：`/api/status` 的 `counts` 非零、卡片数 = `counts.starred + counts.fork`、抽屉能出 README、窄视口下 `document.documentElement.scrollWidth === clientWidth`（无横向溢出）。验证结束把 agent-browser 临时 Chrome 清到 0 个进程。

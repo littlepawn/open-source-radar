@@ -1,37 +1,28 @@
 # 开源雷达 · 我的 GitHub 收藏本地看板
 
-把 littlepawn 的 **starred** 和 **fork** 仓库拉到本地 SQLite，自动写中文简介和标签，用一个网页看板搜索、筛选、分类管理；另外带「发现热门开源项目」和「跟踪新版本」。
+把 **starred** 和 **fork** 仓库拉到本地 SQLite，自动写中文简介和标签，用一个网页看板搜索、筛选、分类管理；另外带「发现热门开源项目」与「跟踪新版本」。
 
 零第三方依赖：只用 Bun 内置（`Bun.serve` + `bun:sqlite` + `fetch`），前端是手写 HTML/CSS/JS，没有构建步骤。
+
+> 官方 REST 没有 GitHub Lists 端点（`GET /user/lists` 实测 404），所以分类全部存本地 SQLite，不回写 GitHub。
 
 ---
 
 ## 快速开始
 
 ```bash
-cd ~/Desktop/看山工具/开源雷达
-
-# 不带 token（匿名 60 次/小时，只能拿到最近 100 条左右，要告诉它读谁）
-RADAR_LOGIN=littlepawn ./start.sh
-
-# 带 token（推荐，5000 次/小时，能拉完 260+ 页）
+# 带 token（推荐，5000 次/小时，能拉完全部页）
 GITHUB_TOKEN=ghp_xxx ./start.sh
+
+# 不带 token（匿名 60 次/小时，只能拿到最近一页，要告诉它读谁）
+RADAR_LOGIN=你的用户名 ./start.sh
 ```
 
-打开 <http://127.0.0.1:8788>，点左下角「同步 GitHub」。
+打开 <http://127.0.0.1:8788>，用 GitHub token 登录后点左下角「同步 GitHub」。
 
-Token 只在环境变量里，不落盘、不打日志。建法：<https://github.com/settings/tokens>，
-classic token 勾 `public_repo` 就够（读取自己的 star 列表需要 `user` 权限，勾上更稳）。
+Token 只在环境变量里，不落盘、不打日志。建法：<https://github.com/settings/tokens>，classic token 勾 `public_repo` 就够（读取自己的 star 列表需要 `user` 权限，勾上更稳）。
 
-**没有 token 也能跑**，但要告诉它读谁：
-
-```bash
-RADAR_LOGIN=littlepawn ./start.sh
-```
-
-匿名走 `/users/<login>/starred`（实测可读公开收藏，且 `Accept: application/vnd.github.star+json`
-能拿到 `starred_at`），代价是 60 次/小时、只能拿到最近一页左右。配额用尽时接口会直接回
-「GitHub 403 限速…约 N 分钟后恢复」，不会静默卡住。
+匿名模式走 `/users/<login>/starred`（能读公开收藏），代价是 60 次/小时且只能拿到最近一页。限流时接口会直接回「触发限流，约 N 分钟后恢复」，不会静默卡住。
 
 ---
 
@@ -41,7 +32,7 @@ RADAR_LOGIN=littlepawn ./start.sh
 |---|---|
 | **同步** | `/user/starred` 分页拉 star（保留 `starred_at` 时间），`/users/:login/repos` 拉自己的 fork；再次同步是增量的，追平上次边界即停 |
 | **fork 上游** | 每个 fork 记录 `upstream`（`vaxilu/x-ui` 这类），卡片和详情都显示「fork 自 xxx」 |
-| **中文简介** | 规则引擎按描述 + topics + 语言生成一句中文定位（「归类：AI / Agent、视频处理。…」），原作者写了中文就优先显示原文 |
+| **中文简介** | 规则引擎按描述 + topics + 语言生成一句中文定位，原作者写了中文就优先显示原文 |
 | **自动标签** | 31 条规则映射到业务域（AI / 大模型、容器 / 运维、网络代理、安卓逆向…），可手工增删 |
 | **看板** | 卡片网格、关键词搜索、按标签 / 语言筛选、按 star / 更新时间 / 收藏时间排序、暗色明亮双主题 |
 | **详情抽屉** | README 内联渲染、Topics、可改简介（改过的不再被规则覆盖）、可加自定义标签 |
@@ -55,56 +46,11 @@ RADAR_LOGIN=littlepawn ./start.sh
 ## 数据在哪
 
 ```
-data/radar.db     SQLite（repos / tags / repo_tags / releases / hidden / events）
+data/radar.db         SQLite（repos / tags / repo_tags / releases / hidden / events / auth / sessions）
 data/mcp-cache.json   批量导入用的中间文件（可选）
 ```
 
-重建索引不影响；想清空重来就删 `data/radar.db*` 再启动。
-
----
-
-## 接口
-
-| 方法 | 路径 | 用途 |
-|---|---|---|
-| GET | `/api/status` | 统计、标签、语言分布、限速剩余、同步状态 |
-| GET | `/api/repos?q=&source=&tag=&lang=&sort=` | 列表（source: all/starred/fork/hidden） |
-| GET | `/api/repo/:id` | 单仓详情（含标签） |
-| GET | `/api/repo/:id/readme` | README 原文（首次抓取后本地缓存） |
-| POST | `/api/repo/update` | 改简介 `{id, digest}` |
-| POST | `/api/repo/tag` | 加/删标签 `{repo_id, name 或 tag_id, action: add\|remove}` |
-| POST | `/api/hide` | 隐藏/恢复 `{id, hidden}` |
-| POST | `/api/sync` | 触发同步 `{kind: all\|starred\|fork}` |
-| GET | `/api/events` | SSE，同步进度推送 |
-| GET | `/api/discover?sort=&days=&q=&page=` | 热门发现 |
-| POST | `/api/releases/check` | 检查新版本 `{limit}` |
-| GET | `/api/export` | 导出 JSON |
-
----
-
-## 已知边界（实测）
-
-- **匿名只能抓最近 100 条左右**：GitHub 匿名 60 次/小时，全量 260+ 页扛不住。首次全量必须带 token。
-- **`/user/*` 匿名一律 401**：所以无 token 时改走 `/users/<login>/starred`，必须设 `RADAR_LOGIN`。
-- **搜索配额是另一条线**：未配 token 时 `/search/repositories` 只有 10 次/分钟，点「发现热门」太勤会被 403，等一分钟就好。服务端对 403 会自动读 `X-RateLimit-Reset` 等待重试。
-- **README 只缓存首次**：抓过一次就写进库，仓库更新 README 后要手动清空 `repos.readme` 才会重抓。
-- **简介是规则生成，不是 AI**：规则判断不了语义细节（比如把 `superpowers` 归到「数据库」是误判）。真正的语义改写要在 `server.mjs` 的 `RULES` 之外接一层 LLM，目前刻意没做，因为不想为这个功能引入 API key 依赖。
-- **写回 GitHub 的 Star 需要 token**：`/api/star` 未配 token 会直接返回明确错误，不会静默失败。
-
----
-
-## 文件
-
-```
-server.mjs                 后端（路由 + GitHub 客户端 + 规则引擎 + SQLite）
-public/index.html          页面结构
-public/app.css             主题与布局（dark/light 各一套 CSS 变量）
-public/app.js              前端逻辑（零依赖）
-scripts/import_mcp_cache.py  从 data/mcp-cache.json 批量入库（保留手工简介）
-scripts/merge_mcp_page.py    分页抓取结果合并去重
-scripts/gh-cache.mjs         本地 GitHub 缓存/ETag 代理（可选）
-start.sh                   启动脚本
-```
+想清空重来就删 `data/radar.db*` 再启动。
 
 ---
 
@@ -120,12 +66,14 @@ start.sh                   启动脚本
 
 设了 `GITHUB_TOKEN` 环境变量时自动视为已登录（单用户自托管场景）。
 
+---
+
 ## Docker 部署
 
 ```bash
 # 方式一：直接拉镜像
 docker run -d --name open-source-radar \
-  -p 8788:8788 \
+  -p 127.0.0.1:8788:8788 \
   -v radar-data:/data \
   -e TZ=Asia/Shanghai \
   littlepawn/open-source-radar:latest
@@ -134,7 +82,7 @@ docker run -d --name open-source-radar \
 docker compose up -d
 ```
 
-打开 http://localhost:8788 ，用 GitHub token 登录。
+打开 <http://localhost:8788>，用 GitHub token 登录。
 
 **数据持久化**：全部在 `/data/radar.db`（含仓库数据、标签、加密后的 token），挂在命名卷 `radar-data` 上，容器重建不丢。
 
@@ -165,3 +113,60 @@ docker build -t open-source-radar:latest .
 ```bash
 docker pull littlepawn/open-source-radar:2.0.0
 ```
+
+---
+
+## 接口
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET | `/api/status` | 统计、标签、语言分布、限速剩余、同步状态 |
+| GET | `/api/repos?q=&source=&tag=&lang=&sort=` | 列表（source: all/starred/fork/hidden） |
+| GET | `/api/repo/:id` | 单仓详情（含标签） |
+| GET | `/api/repo/:id/readme` | README 原文（首次抓取后本地缓存） |
+| POST | `/api/repo/update` | 改简介 `{id, digest}` |
+| POST | `/api/repo/tag` | 加/删标签 `{repo_id, name 或 tag_id, action}` |
+| POST | `/api/hide` | 隐藏/恢复 `{id, hidden}` |
+| POST | `/api/sync` | 触发同步 `{kind: all\|starred\|fork}` |
+| GET | `/api/events` | SSE，同步进度推送 |
+| GET | `/api/discover?sort=&days=&q=&page=` | 热门发现 |
+| POST | `/api/releases/check` | 检查新版本 `{limit}` |
+| GET | `/api/export` | 导出 JSON |
+| GET/POST | `/api/auth/state` `/api/auth/login` `/api/auth/logout` | 登录态、登录、登出 |
+
+---
+
+## 已知边界（实测）
+
+- **匿名只能抓最近一页**：GitHub 匿名 60 次/小时，全量 260+ 页扛不住。首次全量必须带 token。
+- **`/user/*` 匿名一律 401**：无 token 时改走 `/users/<login>/starred`，必须设 `RADAR_LOGIN`。
+- **搜索配额是另一条线**：未配 token 时 `/search/repositories` 只有 10 次/分钟。
+- **README 只缓存首次**：抓过一次就写进库，仓库更新 README 后要手动清 `repos.readme` 才重抓。
+- **简介是规则生成，不是 AI**：规则判断不了语义细节。真要语义改写需在 `RULES` 之外接一层 LLM，目前刻意没做（不想为这个功能引入 API key 依赖）。
+- **被 TOS 封禁的仓库**：上游查询会返回 403 `Repository access blocked`，代码已分类识别并跳过，不会当成限流卡 15 分钟。
+- **写回 GitHub 的 Star 需要 token**：未配 token 时明确报错，不会静默失败。
+
+---
+
+## 文件
+
+```
+server.mjs                   后端（路由 + GitHub 客户端 + 规则引擎 + SQLite + 鉴权）
+public/index.html            主看板结构
+public/app.css               主题与布局（dark/light 各一套 CSS 变量）
+public/app.js                前端逻辑（零依赖）
+public/login.html/js         登录页
+public/themes.html/css/js    主题预览页
+scripts/import_mcp_cache.py  从 data/mcp-cache.json 批量入库（保留手工简介）
+scripts/merge_mcp_page.py    分页抓取结果合并去重
+scripts/gh-cache.mjs         本地 GitHub 缓存/ETag 代理（可选）
+start.sh                     启动脚本
+```
+
+前端受 CSP 约束（`style-src 'self'` / `script-src 'self'`）：**不能写内联 `style="…"` 或内联 `<script>`**，会被整条丢弃且不报错。新增页面资源要同步加进 `server.mjs` 的 `ASSET_FILES`，否则未登录访问会被 302 回 `/login`。
+
+---
+
+## 许可证
+
+MIT
