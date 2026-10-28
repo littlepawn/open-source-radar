@@ -300,44 +300,56 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .drawer { position: fixed; inset: 0; background: var(--scrim); z-index: 50; display: flex; justify-content: flex-end; }
 .drawer[hidden] { display: none !important; }
 .drawerbody {
-  width: min(720px, 92vw); background: var(--bg-soft); height: 100%; overflow-y: auto;
-  padding: 20px 24px 60px; position: relative; border-left: 1px solid var(--line);
-  /* 竖向 flex：让吸底操作条在内容不足一屏时也贴住底部。
-     纯 sticky 不行——内容短时 sticky 元素停在自然位置，概览页（长）和
-     AI 页（短）切换会看到操作条上下跳。margin-top:auto 才是「推到底」。 */
+  width: min(720px, 92vw); background: var(--bg-soft); height: 100%; overflow: hidden;
+  padding: 0; position: relative; border-left: 1px solid var(--line);
   display: flex; flex-direction: column;
 }
-.drawerx { position: absolute; right: 14px; top: 12px; }
-/* #drawerContent 是 .drawerbody 的唯一子节点，得让它把高度接满并继续往下传，
-   否则 .dact 的 margin-top:auto 没有可推的距离（父级不是 flex 容器）。
-   flex:1 + min-height:0 是「子级 flex 容器不溢出父级」的必要组合。 */
+.drawerx { position: fixed; right: 14px; top: 12px; z-index: 13; }
+/* 应用外壳式布局：标题(.dtop) → 分段条(.dtabs) → 可滚动页(.dpage) → 操作条(.dact)。
+   吸顶/吸底改成「各自占一行、只有中间那行滚」，而不是三者在同一个滚动容器里
+   靠 position:sticky 浮在内容上方 —— 后者在内容刚过一屏时必然压住最后一屏
+   （实测概览页「保存备注」按钮 bottom 847 被 dact 的 top 835 盖掉 12px，
+   加下内边距只是把遮挡推迟到特定滚动位置，治不了根）。 */
 #drawerContent { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* ---- 抽屉三段（概览 / README / 问 AI）---------------------------------
    原先所有内容一条长列表，README 一长就把「问 AI」顶到几屏之外。
-   现在 README 与 AI 各占一页，分段条吸顶、操作条吸底，任何一页多长都不
-   影响另外两页。滚动容器仍是 .drawerbody，吸顶/吸底靠 position:sticky。 */
+   现在 README 与 AI 各占一页，任何一页多长都不影响另外两页。 */
+/* 分成一条带底色的工具条 + 三个「长得像按钮」的选项。
+   最初做的是三个无色文字：非活动项只有灰字，用户第一次进来完全看不出能点。
+   现在非活动项也有边框与浅底，活动项是实心主题色，视觉上就是一组 tab。 */
 .dtabs {
-  position: sticky; top: -20px; z-index: 12;
-  display: flex; gap: 4px; margin: 0 -24px 4px; padding: 10px 24px 8px;
+  flex: 0 0 auto; z-index: 12;
+  /* 右侧留 56px 给抽屉关闭按钮：它 fixed 在同一高度带里，
+     不 Reserve 的话 ✕ 会压在最后一个 tab 上。 */
+  display: flex; gap: 6px; padding: 10px 56px 10px 24px;
   background: var(--bg-soft); border-bottom: 1px solid var(--line);
 }
 .dtab {
-  background: none; border: 1px solid transparent; border-radius: 8px;
-  padding: 5px 12px; font: inherit; font-size: 12.5px; color: var(--text-dim); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--bg-card); border: 1px solid var(--line); border-radius: 8px;
+  padding: 6px 14px; font: inherit; font-size: 12.5px; color: var(--text-dim);
+  cursor: pointer; transition: background .12s, color .12s, border-color .12s;
 }
-.dtab:hover { background: var(--bg-hover); color: var(--text); }
+.dtab::before { font-size: 12px; line-height: 1; opacity: .85; }
+.dtab[data-dtab="overview"]::before { content: "☰"; }
+.dtab[data-dtab="readme"]::before { content: "▤"; }
+.dtab[data-dtab="ai"]::before { content: "✦"; }
+.dtab:hover { background: var(--bg-hover); color: var(--text); border-color: var(--accent); }
+.dtab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dtab.active {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
-  border-color: color-mix(in srgb, var(--accent) 34%, transparent);
-  color: var(--accent);
+  background: var(--accent); border-color: var(--accent);
+  color: var(--accent-fg); font-weight: 600;
 }
+.dtab.active::before { opacity: 1; }
 /* 面板默认不显示，靠 [hidden] 兜底：作者类的 display 会盖掉 UA 的 [hidden]，
    之前 .discoverbar / .set-nav 都踩过这个坑 */
 .dpage[hidden] { display: none !important; }
+/* 三页里只有这一行滚：标题与操作条各占一行不动，内容再多也不会被它们盖住。 */
+.dpage { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 12px 24px 16px; }
 /* AI 页吃满剩余高度：对话区自己滚，输入框停在操作条上方。
    不给 flex:1 的话，空对话时输入框缩在顶部、下面一大片空白。 */
-.dpage[data-dpage="ai"] { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.dpage[data-dpage="ai"] { display: flex; flex-direction: column; overflow: hidden; }
 .dpage[data-dpage="ai"] > .sec { display: flex; flex-direction: column; flex: 1; min-height: 0; margin-bottom: 0; }
 .dpage[data-dpage="ai"] .aichat { flex: 1; min-height: 80px; max-height: none; }
 /* 空对话也占位：否则 :empty 折叠掉后输入框浮在半空、下面一大块空白。
@@ -350,16 +362,26 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
   content: "还没问过。README、目录与关键文件会自动随问题带给模型。";
   font-size: 12.5px; color: var(--text-faint); text-align: center; line-height: 1.7;
 }
+/* AI 未配置时的空态：居中一块，别让一行细字孤零零挂在顶部 */
+.dpage[data-dpage="ai"] > .ai-empty { display: flex; align-items: center; justify-content: center; }
+.ai-empty-box {
+  max-width: 420px; text-align: center; padding: 26px 22px;
+  border: 1px dashed var(--line); border-radius: 12px; background: var(--bg-card);
+}
+.ai-empty-icon { font-size: 22px; color: var(--accent-2); margin-bottom: 8px; }
+.ai-empty-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+.ai-empty-body { font-size: 12.5px; color: var(--text-dim); line-height: 1.6; margin-bottom: 14px; }
 .dpage[data-dpage="ai"] .btnrow,
 .dpage[data-dpage="ai"] .minihint { flex: 0 0 auto; }
-/* 吸底操作条：给 .drawerbody 留出等高下内边距，否则最后一屏内容被压在条下面 */
+/* 底部操作条固定占一行（不再是 sticky 浮层），所以永远不会盖住内容 */
 .dact {
-  position: sticky; bottom: -60px; z-index: 12;
+  flex: 0 0 auto; z-index: 12;
   display: flex; gap: 8px; flex-wrap: wrap;
-  margin: 16px -24px -60px; padding: 12px 24px;
+  padding: 12px 24px;
   background: var(--bg-soft); border-top: 1px solid var(--line);
-  margin-top: auto;   /* 内容短时把操作条推到底，与长内容页位置一致 */
 }
+/* 右侧留 56px：标题与关闭按钮同一高度带，长仓库名会顶到 ✕ 上 */
+.dtop { flex: 0 0 auto; padding: 20px 56px 0 24px; }
 .drawer h2 { margin: 0 0 4px; font-size: 18px; }
 .drawer h2 a { color: var(--text); text-decoration: none; }
 .drawer .meta { color: var(--text-faint); font-size: 12.5px; margin-bottom: 12px; }
@@ -540,11 +562,14 @@ a.link { color: var(--accent-2); }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 
-/* 抽屉顶部的状态行（打开次数 / 停滞 / fork 落后） */
+/* 状态摘要（打开次数 / 停滞 / 上游领先）。原先有虚线边框 + 全宽块，
+   看起来像一个空的输入框（用户确实把它当成了输入框）。改成带圆点前缀的
+   一行小字，读起来是状态而不是控件。 */
 .statusline {
-  font-size: 12px; color: var(--text-faint); padding: 6px 10px; margin: 10px 0 0;
-  border: 1px dashed var(--line); border-radius: 8px;
+  display: flex; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-faint); margin: 8px 0 0;
 }
+.statusline::before { content: "●"; font-size: 8px; opacity: .5; }
 .statusline .warn { color: var(--warn); }
 
 /* 相似仓库：复用 .chip，只是补一点说明行的间距 */

@@ -541,9 +541,15 @@ function similarBlock(r) {
 
 function aiBlock(r) {
   if (!(state.status?.ai_enabled)) {
-    return `<div class="sec">
-      <label>问 AI</label>
-      <div class="minihint">还没配 AI。<button class="link" data-view="settings" data-anchor="set-ai">去填 Base URL / 模型 / Key</button>，配好后这里能直接问这个库的细节。</div>
+    // 未配置时给一块居中的空态说明：原先只有一行居中细字贴在顶部，
+    // 下面大片空白，看着像页面没加载完。
+    return `<div class="sec ai-empty">
+      <div class="ai-empty-box">
+        <div class="ai-empty-icon">✦</div>
+        <div class="ai-empty-title">还没配置 AI</div>
+        <div class="ai-empty-body">配好 Base URL / 模型 / Key 后，这里能直接问这个仓库的细节——README、目录树与关键文件会自动随问题带给模型。</div>
+        <button class="primary" data-view="settings" data-anchor="set-ai">去配置 AI</button>
+      </div>
     </div>`;
   }
   // 一次对话的多轮历史留在 DOM 里，换仓库就重置（key 是 repo id）
@@ -580,10 +586,10 @@ function setDrawerTab(name) {
     b.setAttribute("aria-selected", on ? "true" : "false");
   }
   for (const p of root.querySelectorAll(".dpage")) p.hidden = p.dataset.dpage !== tab;
-  // 三页共用一个滚动容器：不重置的话，从 README 底部切过来会停在半空，
+  // 每页各自滚动：不重置的话，从 README 底部切过来会停在半空，
   // 从概览切到 README 又会从中段开始——每次切页都从顶看起。
-  const body = root.closest(".drawerbody");
-  if (body) body.scrollTop = 0;
+  // 注意滚的是当前 .dpage（抽屉外壳不滚），所以不能再用 .drawerbody。
+  for (const p of root.querySelectorAll(".dpage")) if (!p.hidden) p.scrollTop = 0;
   try { localStorage.setItem(DRAWER_TAB_KEY, tab); } catch { /* 隐私模式写不了，不影响本次 */ }
   // 切到 AI 页直接给光标，省一次点击
   if (tab === "ai") setTimeout(() => $("#aiQ")?.focus(), 30);
