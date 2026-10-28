@@ -152,10 +152,10 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.2` / `latest`（多架构 manifest：`linux/amd64` + `linux/arm64`，digest `sha256:78fa8a36`），基于 `oven/bun:1.2-alpine`，约 107MB。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.3` / `latest`（多架构 manifest：`linux/amd64` + `linux/arm64`），基于 `oven/bun:1.2-alpine`，约 107MB。
 
 ```bash
-docker pull littlepawn/open-source-radar:2.4.2
+docker pull littlepawn/open-source-radar:2.4.3
 ```
 
 > 发布多架构镜像时不要只用 `docker build && docker push`：在 Apple Silicon 上构建出来只有 `arm64`，x86 设备拉下来会报 `exec format error`。正确做法是分架构构建后合成 manifest list：

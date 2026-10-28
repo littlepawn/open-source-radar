@@ -65,6 +65,16 @@ let db;
 try {
   db = new Database(DB_FILE, { create: true });
   db.exec("PRAGMA journal_mode=WAL;");
+  // 显式声明同步级别。WAL 模式下 SQLite 的默认值本来就是 NORMAL（实测
+  // `PRAGMA journal_mode=WAL; PRAGMA synchronous` → 1），但这不是文档保证的
+  // 组合，写出来才不会被将来换 pragma 顺序时悄悄改回 FULL。
+  // NORMAL 在 WAL 下的代价是「断电可能丢最后若干事务」，对本项目可接受：
+  // 数据全部可从 GitHub 重新同步。
+  db.exec("PRAGMA synchronous=NORMAL;");
+  // busy_timeout 默认是 0（实测 `PRAGMA busy_timeout` → 0），意味着另一进程
+  // （备份脚本、sqlite3 CLI、群晖的自动快照）短暂持锁时，这里会直接抛
+  // SQLITE_BUSY 而不是等一会儿。同步写库是长任务，必须容忍这种瞬时争用。
+  db.exec("PRAGMA busy_timeout=5000;");
   db.query("SELECT 1").get();
 } catch (e) {
   console.error(`[fatal] 数据库打不开：${DB_FILE}\n        ${e.message}`);
@@ -782,6 +792,37 @@ function applyAutoTags(row) {
 }
 
 /* ---------------------------------------------------------------- 同步：stars + forks */
+/* bun:sqlite 是同步 API：一个 for 循环里连续 run() 期间，整个进程的事件循环被占死，
+ * 包括 HTTP 服务（Bun.serve 的 fetch 回调）与 SSE 推送。
+ *
+ * 逐条隐式提交的放大效应：每条仓库约 5 条 SQL（upsert + SELECT digest_src +
+ * UPDATE digest + 2×INSERT tag），一页 100 条 = 500 次隐式事务 = 500 次 fsync。
+ * 本机 APFS 实测 fsync 4.2ms，500 条合计 33ms；NAS 机械盘实测量级 10~20ms，
+ * 一页就要 5~10s。Dockerfile 里 HEALTHCHECK 的 --timeout 是 5s，于是同步期间
+ * 健康检查直接超时 → 容器被判 unhealthy 并重启（群晖上的实际现象）。
+ *
+ * 因此写库按块提交：块内一个事务（fsync 降到每块 1 次），块间 await Bun.sleep(0)
+ * 让出事件循环，健康检查与页面请求都能插进来。
+ * 实测（500 条，模拟慢盘 synchronous=FULL）：逐条 335ms / 阻塞 330ms
+ * → 分块事务 10ms / 阻塞 3ms。
+ *
+ * 块大小取 50：够把 fsync 摊薄，又不会让单个事务持锁太久或在内存里堆太多行。 */
+const WRITE_CHUNK = 50;
+
+/** 把 items 按 WRITE_CHUNK 切块，每块在一个事务里跑 fn，块间让出事件循环。
+ *  事务内单条语句失败只回滚该条（实测：同事务里已成功的语句仍会提交），
+ *  所以 fn 里的 try/catch 语义与原来逐条提交时一致。 */
+async function writeChunked(items, fn) {
+  for (let i = 0; i < items.length; i += WRITE_CHUNK) {
+    const chunk = items.slice(i, i + WRITE_CHUNK);
+    db.transaction(() => {
+      for (const item of chunk) fn(item);
+    })();
+    // 让出：不给这一拍，Bun.serve 的请求要等整轮同步结束才被处理
+    await Bun.sleep(0);
+  }
+}
+
 let syncState = { running: false, kind: null, total: 0, done: 0, started_at: null, error: null, phase: "" };
 
 /* ---- 出站代理配置 ----
@@ -930,11 +971,13 @@ async function syncStarred({ incremental = true } = {}) {
   let oldest = null;
   let stop = false;
   await paged(endpoint, async (items) => {
-    for (const r of items) {
+    // 写库按块提交 + 块间让出事件循环，否则整页 100 条（约 500 次隐式事务）
+    // 会把 HTTP 服务一起卡住，慢盘上足以让 HEALTHCHECK 的 5s 超时（见 writeChunked）。
+    await writeChunked(items, (r) => {
       try {
         if (r.starred_at && (oldest === null || r.starred_at < oldest)) oldest = r.starred_at;
         const row = saveRepo(r, "starred", r.starred_at || null);
-        if (!row) { syncState.skipped = (syncState.skipped || 0) + 1; continue; }
+        if (!row) { syncState.skipped = (syncState.skipped || 0) + 1; return; }
         seen.add(row.id);
         const tags = applyAutoTags(row);
         for (const t of tags) addRepoTag.run(row.id, tagByName(t).id, "auto");
@@ -945,7 +988,7 @@ async function syncStarred({ incremental = true } = {}) {
         syncState.skipped = (syncState.skipped || 0) + 1;
         log("warn", `跳过 ${r?.full_name || r?.id || "未知条目"}：${e.message}`);
       }
-    }
+    });
     broadcast({ type: "progress", ...syncState, total: count });
     if (incremental && last && oldest && oldest <= last && count > 100) {
       stop = true;
@@ -981,35 +1024,40 @@ async function syncForks() {
     if (more.length < 100) { full = true; break; }
     page++;
   }
-  // fork 上游：列表接口不返回 parent（实测 25 个 fork 全无该字段），按需单独查详情
+  // fork 上游：列表接口不返回 parent（实测 25 个 fork 全无该字段），按需单独查详情。
+  // 拆成两阶段：先分块写库（事务 + 块间让出），再逐个补上游（每次都是网络往返，
+  // 天然让出事件循环）。原来写库与网络调用交错在一个 for 里，遇到上游已知道的
+  // fork 就一路同步写下去，事件循环仍会被卡住。
   let count = 0;
-  for (const r of forks) {
+  const needUpstream = [];
+  await writeChunked(forks, (r) => {
     let row;
     try {
       row = saveRepo(r, "fork", null);
     } catch (e) {
       log("warn", `跳过 fork ${r?.full_name || "未知"}：${e.message}`);
-      continue;
+      return;
     }
-    if (!row) continue;
+    if (!row) return;
     seen.add(row.id);
     const tags = applyAutoTags(row);
     for (const t of tags) addRepoTag.run(row.id, tagByName(t).id, "auto");
     const known = db.query("SELECT upstream FROM repos WHERE id=?").get(row.id);
-    if (!known?.upstream) {
-      // gh() 对被 GitHub 封禁/无权限的仓库返回 {forbidden:true}（非 throw），
-      // 跳过上游查询即可，别让它中断整轮同步。
-      const full = await gh(`/repos/${r.full_name}`);
-      if (full?.forbidden) {
-        log("warn", `跳过 fork ${r.full_name} 上游查询：${full.message}`);
-      } else {
-        const up = full?.parent?.full_name || full?.source?.full_name || null;
-        if (up) db.query("UPDATE repos SET upstream=? WHERE id=?").run(up, row.id);
-      }
-    }
+    if (!known?.upstream) needUpstream.push(row);
     count++;
     syncState.done = count;
     if (count % 10 === 0) broadcast({ type: "progress", ...syncState });
+  });
+  for (const row of needUpstream) {
+    // gh() 对被 GitHub 封禁/无权限的仓库返回 {forbidden:true}（非 throw），
+    // 跳过上游查询即可，别让它中断整轮同步。
+    const detail = await gh(`/repos/${row.full_name}`);
+    if (detail?.forbidden) {
+      log("warn", `跳过 fork ${row.full_name} 上游查询：${detail.message}`);
+    } else {
+      const up = detail?.parent?.full_name || detail?.source?.full_name || null;
+      if (up) db.query("UPDATE repos SET upstream=? WHERE id=?").run(up, row.id);
+    }
   }
   return { count, login, seen, full };
 }

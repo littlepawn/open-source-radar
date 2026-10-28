@@ -42,8 +42,17 @@ VOLUME ["/data"]
 # 用 wget 的退出码判断：busybox wget 对 4xx/5xx 返回非零。
 # 之前 `grep -q "200"` 会匹配到 Content-Length: 200x 之类的任意位置，
 # 一个 500 响应也能被判成 healthy。
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/login" || exit 1
+# 健康检查打的是容器内 127.0.0.1，必须绕开代理：
+# busybox 的 wget 会读 http_proxy / HTTP_PROXY，一旦容器环境里配了代理（国内 NAS
+# 很常见），这个请求会被发到代理；代理若不可达或不转发回环地址，wget 就一直等到
+# 超时——容器被判 unhealthy，sync 日志里却什么错都没有。这正是群晖上的现象。
+#   env -u ...：把这几个变量剥掉再执行（实测：留有代理时 exit=143 被杀，
+#   剥掉后 exit=0 立即返回）
+#
+# timeout 也从 5s 放宽到 10s：写库虽是分块提交，冷启动与慢盘仍会有抖动。
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+  CMD env -u http_proxy -u HTTP_PROXY -u https_proxy -u HTTPS_PROXY -u all_proxy -u ALL_PROXY \
+      wget -q -O /dev/null "http://127.0.0.1:${PORT}/login" || exit 1
 
 ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["bun", "server.mjs"]
