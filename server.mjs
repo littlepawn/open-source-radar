@@ -27,6 +27,9 @@ import {
   pickKeyFiles, buildMessages, validateAiConfig, resolveBaseUrl, normalizeModels,
   matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT, explainConnError,
 } from "./lib/ai.mjs";
+import {
+  parseProxyUrl, configureProxy, outboundFetch, proxyStatus, testProxy,
+} from "./lib/proxy.mjs";
 // 查询参数统一收敛：NaN / 越界都回落到默认，不让脏输入进 SQL 或纯函数
 function clampNum(v, fallback, lo, hi) {
   const n = Number(v);
@@ -179,6 +182,37 @@ const getMeta = (k, d = null) => {
 const LOGIN = () => process.env.RADAR_LOGIN || getMeta("login") || "";
 const setMeta = (k, v) =>
   db.query("INSERT INTO meta(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(k, String(v));
+
+/* ------------------------------------------------------------ 出口代理存储 */
+const PROXY_ENV = () =>
+  (process.env.RADAR_PROXY || "").trim() || (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "").trim();
+const proxyFromEnv = () => !!PROXY_ENV();
+
+// 代理串带凭证，与 ai_key 同样走 AES-GCM 存 auth 表；空值代表直连
+function proxyUrlStored() {
+  const row = db.query("SELECT v FROM auth WHERE k='proxy_url'").get();
+  return row ? decToken(row.v) : "";
+}
+function saveProxyUrl(raw) {
+  const v = String(raw || "").trim();
+  if (!v) return db.query("DELETE FROM auth WHERE k='proxy_url'").run();
+  db.query("INSERT INTO auth (k,v) VALUES ('proxy_url',?) ON CONFLICT(k) DO UPDATE SET v=excluded.v").run(encToken(v));
+}
+// 给前端的状态：只回显打码后的地址，绝不把凭证送回浏览器
+function proxyView() {
+  const st = proxyStatus();
+  const fromEnv = proxyFromEnv();
+  return {
+    url: st.url,
+    display: st.display,
+    scheme: st.scheme,
+    enabled: st.enabled,
+    bridge_port: st.bridge_port,
+    from_env: fromEnv,
+    // 容器里的 127.0.0.1 指向容器自身，前端据此提示「要填宿主地址」
+    in_docker: IN_DOCKER,
+  };
+}
 
 /* ---------------------------------------------------------------- 鉴权 */
 // 会话密钥：优先环境变量；否则首次启动生成并持久化到 db（data 卷里，容器重建不失效）
@@ -401,7 +435,7 @@ async function aiChat(messages, cfg) {
   const url = `${resolveBaseUrl(cfg.base_url)}/chat/completions`;
   let res;
   try {
-    res = await fetch(url, {
+    res = await outboundFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -536,7 +570,7 @@ async function gh(path, { retry = 3, accept } = {}) {
     try {
       // 没有超时会一直挂到 undici 的 300s 默认值，前端只看到 "fetch failed"。
       // GitHub 单次响应极少超过 15s，超时就当网络错误重试。
-      res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+      res = await outboundFetch(url, { headers, signal: AbortSignal.timeout(15000) });
     } catch (e) {
       const why = e.name === "TimeoutError" ? "15s 超时" : e.message;
       if (attempt === retry) throw new Error(`网络错误 ${url}: ${why}（已重试 ${retry} 次）`);
@@ -749,6 +783,56 @@ function applyAutoTags(row) {
 
 /* ---------------------------------------------------------------- 同步：stars + forks */
 let syncState = { running: false, kind: null, total: 0, done: 0, started_at: null, error: null, phase: "" };
+
+/* ---- 出站代理配置 ----
+ * 存在 meta 里（proxy.url）。凭证若写在 URL 里（socks5://user:pass@host:port），
+ * 整串加密后存 auth 表，meta 只留「有没有凭证」这个事实，导出备份也不会漏密码。
+ * 对应 lib/proxy.mjs：真正建隧道的是那边，这里只管持久化与应用。 */
+const PROXY_KEY = "proxy_url";
+const PROXY_ENC_KEY = "proxy_enc";
+function proxyConfig() {
+  const raw = getMeta(PROXY_KEY, "") || "";
+  let url = raw;
+  const enc = db.query("SELECT v FROM auth WHERE k=?").get(PROXY_ENC_KEY);
+  if (enc) {
+    // 有凭证：meta 里只有 scheme://host:port，完整串在 auth 表加密存
+    const full = decToken(enc.v);
+    if (full) url = full;
+  }
+  try {
+    return parseProxyUrl(url);
+  } catch (e) {
+    // 库里存着坏配置不能让服务起不来，降级成「不启用」并留痕
+    log("warn", `代理配置无法解析，已按直连处理：${e.message}`);
+    return null;
+  }
+}
+/* 把凭证剥掉，只留 scheme://host:port —— 这是可以给前端看的形态 */
+function stripProxyCreds(raw) {
+  try {
+    const c = parseProxyUrl(raw);
+    return c ? c.display : "";
+  } catch { return ""; }
+}
+function saveProxyConfig(raw) {
+  const input = String(raw ?? "").trim();
+  if (!input) {
+    setMeta(PROXY_KEY, "");
+    db.query("DELETE FROM auth WHERE k=?").run(PROXY_ENC_KEY);
+    return null;
+  }
+  const cfg = parseProxyUrl(input);          // 格式不对就在这里抛，交给调用方回 400
+  if (cfg.user || cfg.pass) {
+    // 有凭证：明文完整串加密进 auth 表，meta 只存脱敏形态
+    db.query("INSERT INTO auth (k,v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v")
+      .run(PROXY_ENC_KEY, encToken(`${cfg.scheme}://${cfg.user ? encodeURIComponent(cfg.user) + (cfg.pass ? ":" + encodeURIComponent(cfg.pass) : "") + "@" : ""}${cfg.host}:${cfg.port}`));
+    setMeta(PROXY_KEY, cfg.display);
+  } else {
+    db.query("DELETE FROM auth WHERE k=?").run(PROXY_ENC_KEY);
+    setMeta(PROXY_KEY, cfg.display);
+  }
+  return cfg;
+}
 
 /* 自动同步调度。用 setTimeout 链而不是 setInterval：
    间隔可随时改，setInterval 改了得重开，且同步耗时长于间隔时会堆叠。
@@ -1000,7 +1084,7 @@ async function fetchReadme(row) {
     if (tk) headers.Authorization = `Bearer ${tk}`;
   let res;
   try {
-    res = await fetch(`${GH}/repos/${row.full_name}/readme`, {
+    res = await outboundFetch(`${GH}/repos/${row.full_name}/readme`, {
       headers,
       signal: AbortSignal.timeout(15000),
     });
@@ -1308,7 +1392,7 @@ const server = Bun.serve({
       // 真调一次 GitHub 验证
       let who;
       try {
-        const res = await fetch(`${GH}/user`, {
+        const res = await outboundFetch(`${GH}/user`, {
           headers: {
             Authorization: `Bearer ${token}`,
             Accept: "application/vnd.github+json",
@@ -1689,7 +1773,7 @@ const server = Bun.serve({
         // 用归一化后的地址尝试，拿不到再按「验证失败但 chat 仍可用」如实回
         const baseUrl = resolveBaseUrl(baseUrlRaw);
         try {
-          const res = await fetch(`${baseUrl}/models`, {
+          const res = await outboundFetch(`${baseUrl}/models`, {
             headers: { authorization: `Bearer ${key}` },
             signal: AbortSignal.timeout(15000),
           });
@@ -1867,7 +1951,7 @@ const server = Bun.serve({
         const row = db.query("SELECT * FROM repos WHERE id=?").get(Number(b.id));
         if (!row) return json({ error: "not found" }, 404);
         const url = `${GH}/user/starred/${row.full_name}`;
-        const res = await fetch(url, {
+        const res = await outboundFetch(url, {
           method: b.starred === false ? "DELETE" : "PUT",
           headers: {
             Authorization: `Bearer ${tkStar}`,
@@ -1998,6 +2082,55 @@ const server = Bun.serve({
         });
       }
 
+      /* ---------------- 出站代理设置
+         代理地址里可能带账号密码，所以存 auth 表并加密（与 ai_key 同一套），
+         绝不明文进 meta——meta 会被 /api/export 导出。 */
+      if (p === "/api/proxy" && req.method === "GET") {
+        return json(proxyView());
+      }
+      if (p === "/api/proxy" && req.method === "POST") {
+        let body = {};
+        try { body = await req.json(); } catch { return json({ error: "请求体不是合法 JSON" }, 400); }
+        const raw = String(body?.url ?? "").trim();
+        let cfg = null;
+        if (raw) {
+          try {
+            cfg = parseProxyUrl(raw);
+          } catch (e) {
+            return json({ error: e.message }, 400);
+          }
+        }
+        if (proxyFromEnv()) {
+          return json({ error: "当前实例的代理由环境变量 RADAR_PROXY 指定，页面上改不了" }, 409);
+        }
+        // 先试通再保存：存一个连不上的代理会把同步和 AI 一起弄坏，且现象和「GitHub 挂了」一样难分辨
+        if (cfg) {
+          try {
+            await testProxy(cfg, 12000);
+          } catch (e) {
+            return json({ error: `代理连不上，未保存：${e.message}` }, 400);
+          }
+        }
+        await configureProxy(cfg);
+        saveProxyUrl(raw);
+        log("info", cfg ? `出口代理已切换：${cfg.display}` : "出口代理已清空，恢复直连");
+        return json(proxyView());
+      }
+      if (p === "/api/proxy/test" && req.method === "POST") {
+        let body = {};
+        try { body = await req.json(); } catch { return json({ error: "请求体不是合法 JSON" }, 400); }
+        const raw = String(body?.url ?? "").trim();
+        let cfg = null;
+        if (raw) {
+          try { cfg = parseProxyUrl(raw); } catch (e) { return json({ error: e.message }, 400); }
+        }
+        try {
+          const r = await testProxy(cfg, 12000);
+          return json({ ...r, url: cfg ? cfg.display : "直连" });
+        } catch (e) {
+          return json({ ok: false, url: cfg ? cfg.display : "直连", error: e.message });
+        }
+      }
       return json({ error: "unknown endpoint" }, 404);
     } catch (e) {
       log("error", `${p} → ${e.message}`);
@@ -2005,6 +2138,26 @@ const server = Bun.serve({
     }
   },
 });
+
+// 出站代理：环境变量 RADAR_PROXY 优先（容器部署时用 compose 传更省事），
+// 其次读库里的设置（设置页可改，立即生效，不用重启）。
+{
+  const envProxy = (process.env.RADAR_PROXY || "").trim() || (process.env.HTTPS_PROXY || process.env.HTTP_PROXY || "").trim();
+  const raw = envProxy || proxyUrlStored();
+  if (raw) {
+    try {
+      await configureProxy(parseProxyUrl(raw));
+      const st = proxyStatus();
+      log("info", `出口代理：${st.display}${envProxy ? "（来自环境变量）" : ""}`);
+    } catch (e) {
+      // 配错了不能拖垮启动：GitHub 直连也还能用，先带病跑，页面上能看到原因
+      log("error", `出口代理配置无效（${raw}）：${e.message}，本次按直连启动`);
+      await configureProxy(null).catch(() => {});
+    }
+  } else {
+    log("info", "出口代理：未配置（直连）");
+  }
+}
 
 log("info", `开源雷达启动 http://${HOST}:${PORT}  token=${currentToken() ? "yes" : "no"}`);
 {

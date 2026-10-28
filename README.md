@@ -134,10 +134,10 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.3.10` / `latest`（digest `sha256:6d797c2c`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.0` / `latest`，基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
 
 ```bash
-docker pull littlepawn/open-source-radar:2.3.10
+docker pull littlepawn/open-source-radar:2.4.0
 ```
 
 > **接本机 AI 服务时注意**：容器里的 `127.0.0.1` 是容器自己，不是你的电脑。
@@ -154,6 +154,11 @@ docker pull littlepawn/open-source-radar:2.3.10
 > **AI 返回「只输出了思考过程」**：推理模型（deepseek-v4 / o 系列 / QwQ 等）先输出
 > 思维链再给正文，`单次上限 tokens` 太小会把额度全花在思考上。调到 2000 以上即可。
 
+> **要走代理**：设置页 →「网络代理」填 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:7890`，
+> 保存前会先试一次连通（连不上就不让存）。GitHub 同步、README 抓取、AI 请求全部走它，改完即时生效、不用重启。
+> 容器部署时同样把 `127.0.0.1` 换成 `host.docker.internal`；也可以用环境变量 `RADAR_PROXY` 指定（优先于页面设置）。
+> 代理串可能带账号密码，所以加密存在库里，`/api/export` **不会** 导出它。
+
 ---
 
 ## 接口
@@ -169,6 +174,8 @@ docker pull littlepawn/open-source-radar:2.3.10
 | POST | `/api/hide` | 隐藏/恢复 `{id, hidden}` |
 | POST | `/api/sync` | 触发同步 `{kind: all\|starred\|fork}` |
 | GET/POST | `/api/settings/autosync` | 自动同步开关与间隔；GET 另返回 `next_run_at`、`last_error` |
+| GET/POST | `/api/proxy` | 出站代理；POST 会先试连通再保存，`{url:""}` 恢复直连 |
+| POST | `/api/proxy/test` | 只试不存 `{url}`，返回 `{ok, status, ms}` 或 `{ok:false, error}` |
 | GET | `/api/events` | SSE，同步进度推送 |
 | GET | `/api/discover?sort=&days=&q=&page=` | 热门发现 |
 | POST | `/api/releases/check` | 检查新版本 `{limit}` |
@@ -186,6 +193,10 @@ docker pull littlepawn/open-source-radar:2.3.10
 - **简介是规则生成，不是 AI**：规则判断不了语义细节。真要语义改写需在 `RULES` 之外接一层 LLM，目前刻意没做（不想为这个功能引入 API key 依赖）。
 - **被 TOS 封禁的仓库**：上游查询会返回 403 `Repository access blocked`，代码已分类识别并跳过，不会当成限流卡 15 分钟。
 - **写回 GitHub 的 Star 需要 token**：未配 token 时明确报错，不会静默失败。
+- **SOCKS5 是本项目自己实现的桥**：Bun 的 `fetch` 只认 http(s) 代理，传 `socks5://` 会直接报 TypeError。
+  所以 `lib/proxy.mjs` 在 127.0.0.1 起一个本地 http 代理，把 CONNECT 隧道打到 SOCKS5 上；
+  只支持无认证与用户名/密码认证（RFC 1929），不支持 SOCKS4。代理挂掉时错误信息会写明是代理不可用，
+  而不是伪装成「GitHub 返回 502」。
 
 ---
 
@@ -198,11 +209,13 @@ lib/insight.mjs              停滞判定 / 清理候选 / fork 落后 / 相似�
 lib/ai.mjs                   AI 对话：预算裁剪、消息拼装、服务商预设
 lib/discover.mjs             发现页阈值收敛与查询串拼装
 lib/schedule.mjs             自动同步时间计算（ISO 解析、错过即补、间隔收敛）
+lib/proxy.mjs                出站代理：SOCKS5 握手、本地桥、错误归类
 public/index.html            主看板结构
 public/app.css               主题与布局（dark/light 各一套 CSS 变量）
 public/app.js                前端逻辑（零依赖）
 public/md.js                 README 渲染器（UMD，浏览器与测试共用）
 public/ai.js                 设置页与单仓 AI 对话
+public/proxy.js              设置页的网络代理面板
 public/login.html/js         登录页
 public/themes.html/css/js    主题预览页
 tests/*.test.mjs             纯逻辑单测（bun test）

@@ -184,6 +184,11 @@ button { cursor: pointer; }
 }
 .ghost:hover { border-color: var(--accent-2); color: var(--text); }
 .minihint { font-size: 11px; color: var(--text-faint); text-align: center; line-height: 1.35; }
+/* 设置页里的说明文字：靠左，居中会让「容器里要用宿主地址」这种长句读起来断气 */
+.set-sec .minihint { text-align: left; font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+.set-sec .minihint.ok { color: var(--accent); }
+.set-sec .minihint.warn { color: var(--danger); }
+#pxUrl { flex: 1 1 auto; min-width: 0; }
 /* 服务商提示条：告诉用户「这家 /models 拉不到不是你的错」或「这端点用不了」 */
 .warnnote {
   text-align: left; margin: 4px 0 2px; padding: 8px 10px;

@@ -209,6 +209,23 @@
             「这库还活跃吗，维护者是谁」「它依赖了哪些外部服务」。
           </div>
         </section>
+        <section class="set-sec" id="set-proxy" data-nav="网络代理">
+          <h3 class="set-h3">网络代理</h3>
+          <p class="set-desc">GitHub 同步、README 拉取、AI 请求全部走这里配置的出口。直连能通就留空；内网 127.0.0.1 对容器无效，容器里要用宿主地址。</p>
+          <div class="frow"><span>代理地址</span>
+            <input id="pxUrl" class="tokenfield" type="text" spellcheck="false"
+                   placeholder="http://127.0.0.1:7890 或 socks5://127.0.0.1:7890，留空=直连">
+          </div>
+          <p class="minihint" id="pxHint"></p>
+          <p class="minihint" id="pxNote"></p>
+          <div class="btnrow">
+            <button class="primary" type="button" id="pxSave">保存并应用</button>
+            <button class="ghost" type="button" id="pxTest">测试连接</button>
+            <button class="ghost" type="button" id="pxClear">清空（直连）</button>
+          </div>
+          <p class="minihint" id="pxMsg"></p>
+        </section>
+      
 
         <!-- 后续设置项往这里加：每项一个 <section class="set-sec">，
              侧栏顶部会根据这些 section 的 data-nav 自动生成跳转条。 -->
@@ -251,6 +268,7 @@
 <script src="/md.js"></script>
     <script src="/rules.js"></script>
 <script src="/ai.js"></script>
+    <script src="/proxy.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
