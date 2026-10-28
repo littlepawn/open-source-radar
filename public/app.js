@@ -301,10 +301,20 @@ async function openRepo(id) {
   const allTags = state.tags.map((t) => t.name);
   const topics = parseTopics(r.topics);
   $("#drawerContent").innerHTML = `
+    <div class="dtop">
     <h2><a href="${esc(r.html_url)}" target="_blank" rel="noreferrer">${esc(r.full_name)}</a></h2>
     <div class="meta">⭐ ${fmt(r.stars)} · ⑂ ${fmt(r.forks)} · ${esc(r.language || "—")} · ${esc(r.license || "无协议")}
       · 最后推送 ${ago(r.pushed_at)}${r.archived ? " · 已归档" : ""}${r.upstream ? ` · fork 自 <a href="https://github.com/${esc(r.upstream)}" target="_blank" rel="noreferrer">${esc(r.upstream)}</a>` : ""}${safeUrl(r.homepage) ? ` · <a href="${esc(safeUrl(r.homepage))}" target="_blank" rel="noreferrer">主页</a>` : ""}</div>
     ${statusLine(r)}
+    </div>
+    <!-- 分段条吸顶：README 动辄几千行，把「问 AI」放在最下面等于逼用户滑到底。
+         改成三段平级，README 单独一页，AI 单独一页，谁长都不影响另一个。 -->
+    <div class="dtabs" role="tablist">
+      <button class="dtab" type="button" role="tab" data-dtab="overview">概览</button>
+      <button class="dtab" type="button" role="tab" data-dtab="readme">README</button>
+      <button class="dtab" type="button" role="tab" data-dtab="ai">问 AI</button>
+    </div>
+    <section class="dpage" data-dpage="overview">
     <div class="sec">
       <label>我的中文简介（保存后不会被自动规则覆盖）</label>
       <textarea id="digEdit">${esc(r.digest || "")}</textarea>
@@ -330,19 +340,37 @@ async function openRepo(id) {
       <div class="btnrow"><button class="primary" id="noteSave">保存备注</button>
         <span class="minihint">备注会显示在卡片上，搜索也能搜到</span></div>
     </div>
-    <div class="sec">
-      <label>README</label>
-      <div class="readme" id="readmeBox">加载中…</div>
-    </div>
     ${similarBlock(r)}
-    ${aiBlock(r)}
-    <div class="sec btnrow">
+    </section>
+    <section class="dpage" data-dpage="readme" hidden>
+      <div class="readme" id="readmeBox">加载中…</div>
+    </section>
+    <section class="dpage" data-dpage="ai" hidden>
+      ${aiBlock(r)}
+    </section>
+    <!-- 操作条吸底：三段页里都能直接改状态，不必先切回概览 -->
+    <div class="dact">
       <button class="ghost" id="toreadBtn">${r.toread ? "移出待读" : "加入待读"}</button>
       <button class="ghost" id="dropBtn">${r.dropped ? "取消放弃标记" : "标记放弃"}</button>
       <button class="ghost" id="hideBtn">${r.hidden ? "恢复显示" : "隐藏该项目"}</button>
       <button class="ghost" id="starBtn">${r.source === "fork" ? "打开 Fork 源" : "去 GitHub 取消/加 Star"}</button>
     </div>`;
   if (mySeq === drawerSeq) $("#drawer").hidden = false;
+
+  // 用 onclick 赋值而不是 addEventListener：#drawerContent 是常驻节点，
+  // 每次开抽屉只换 innerHTML，监听器会一层层叠上去。
+  $("#drawerContent").onclick = (e) => {
+    const b = e.target.closest(".dtab");
+    if (!b) return;
+    setDrawerTab(b.dataset.dtab);
+  };
+  // 上次停在哪页就回哪页：连读几个仓库的 README 时不用每次重新点。
+  // 但 AI 没启用时即便上次停在「问 AI」也回概览，否则打开抽屉先看到一段"去配置"的提示。
+  // 只在「确认 AI 未启用」时才强制回概览；status 还没回来时按启用处理，
+  // 否则首屏抢着开抽屉会把用户上次停的「问 AI」白白清掉。
+  const wantTab = lastDrawerTab();
+  const aiOff = !!state.status && !state.status.ai_enabled;
+  setDrawerTab(wantTab === "ai" && aiOff ? "overview" : wantTab);
 
   $("#digSave").onclick = async () => {
     await api("/api/repo/update", {
@@ -533,6 +561,33 @@ function aiBlock(r) {
 }
 
 const aiState = { repoId: null, history: [] };
+
+/* 抽屉分段：概览 / README / 问 AI。
+   三者互斥显示，切页不重新渲染（README 与对话历史都留在 DOM 里），
+   所以来回切不会重拉 README、也不会丢对话。 */
+const DRAWER_TAB_KEY = "radar.drawerTab";
+function lastDrawerTab() {
+  const v = localStorage.getItem(DRAWER_TAB_KEY);
+  return v === "readme" || v === "ai" ? v : "overview";
+}
+function setDrawerTab(name) {
+  const root = $("#drawerContent");
+  if (!root) return;
+  const tab = name === "readme" || name === "ai" ? name : "overview";
+  for (const b of root.querySelectorAll(".dtab")) {
+    const on = b.dataset.dtab === tab;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  for (const p of root.querySelectorAll(".dpage")) p.hidden = p.dataset.dpage !== tab;
+  // 三页共用一个滚动容器：不重置的话，从 README 底部切过来会停在半空，
+  // 从概览切到 README 又会从中段开始——每次切页都从顶看起。
+  const body = root.closest(".drawerbody");
+  if (body) body.scrollTop = 0;
+  try { localStorage.setItem(DRAWER_TAB_KEY, tab); } catch { /* 隐私模式写不了，不影响本次 */ }
+  // 切到 AI 页直接给光标，省一次点击
+  if (tab === "ai") setTimeout(() => $("#aiQ")?.focus(), 30);
+}
 
 // 「用规则重算」的预览必须与服务端落库的结果一致，所以不再在本地维护第二份规则表：
 // 规则由 scripts/gen-rules.mjs 从 lib/rules.mjs 生成到 public/rules.js（window.RadarRules）。
