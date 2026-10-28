@@ -193,7 +193,160 @@
     }
   }
 
-  // 向上游要模型列表，填进 datalist（可下拉可手输，两边都不耽误）。
+  // ---- 模型选择器（替代原生 datalist）------------------------------------
+  // datalist 的老毛病：Chrome 只在输入时给候选，点箭头不弹；候选项还带系统 tooltip
+  // 盖住下一行。这里自绘面板：点箭头/点输入框列出全部，输入即过滤，上下键 + 回车选中。
+  const MODELS_KEY = "radar.aiModels";
+  let models = [];
+  let popIdx = -1;
+  // 面板是「列出全部」还是「按输入过滤」——两种入口语义不同：
+  // 点箭头/聚焦 = 我要挑，必须列全；在框里打字 = 我在搜，才过滤。
+  // 用一个开关记住来源，否则框里已有值时点箭头只能看到一条（就是它自己）。
+  let filtering = false;
+
+  function loadModels() {
+    try {
+      const raw = localStorage.getItem(MODELS_KEY);
+      const list = raw ? JSON.parse(raw) : [];
+      models = Array.isArray(list) ? list.filter((m) => typeof m === "string") : [];
+    } catch {
+      models = [];
+    }
+  }
+  function setModels(list) {
+    // 去重保序：上游偶尔把同一个模型列两遍
+    models = [...new Set(list.filter((m) => typeof m === "string" && m))];
+    try {
+      localStorage.setItem(MODELS_KEY, JSON.stringify(models));
+    } catch {
+      // 隐私模式写不了 localStorage，不影响本次使用
+    }
+  }
+
+  const popEl = () => $("#aiModelPop");
+  const inputEl = () => $("#aiModel");
+
+  function visibleModels() {
+    const q = filtering ? inputEl().value.trim().toLowerCase() : "";
+    if (!q) return models;
+    return models.filter((m) => m.toLowerCase().includes(q));
+  }
+
+  function renderPop() {
+    const pop = popEl();
+    if (!pop) return;
+    const rows = visibleModels();
+    if (!rows.length) {
+      pop.innerHTML = `<div class="popempty">${models.length ? "没有匹配的模型" : "还没拉到模型：点右边「拉取」"}</div>`;
+      popIdx = -1;
+      return;
+    }
+    // 上限 200：再多也只是滚动条变长，外加一堆 DOM
+    const cur = inputEl().value.trim();
+    pop.innerHTML = rows.slice(0, 200).map((m, i) => {
+      const on = m === cur ? " on" : "";
+      return `<div class="popitem${on}" role="option" aria-selected="${m === cur}" data-i="${i}" title="${esc(m)}">${esc(m)}</div>`;
+    }).join("");
+    if (popIdx >= rows.length) popIdx = rows.length - 1;
+    paintIdx();
+  }
+
+  function paintIdx() {
+    const pop = popEl();
+    if (!pop) return;
+    for (const el of pop.querySelectorAll(".popitem")) {
+      el.classList.toggle("sel", Number(el.dataset.i) === popIdx);
+    }
+    const hit = pop.querySelector(".popitem.sel");
+    if (hit) hit.scrollIntoView({ block: "nearest" });
+  }
+
+  function openPop({ filter = false } = {}) {
+    const pop = popEl(), inp = inputEl();
+    if (!pop || !inp || inp.disabled) return;
+    filtering = filter;
+    renderPop();
+    pop.hidden = false;
+    inp.setAttribute("aria-expanded", "true");
+    // 已填的值落在列表里就定位到它，否则从第一条开始
+    const cur = inp.value.trim();
+    popIdx = visibleModels().indexOf(cur);
+  }
+
+  function closePop() {
+    const pop = popEl(), inp = inputEl();
+    if (!pop) return;
+    pop.hidden = true;
+    popIdx = -1;
+    inp?.setAttribute("aria-expanded", "false");
+  }
+
+  function pick(m) {
+    const inp = inputEl();
+    if (!inp) return;
+    inp.value = m;
+    // 程序化改 value 不触发 input，watchDirty 收不到 → 保存按钮不会亮
+    inp.dispatchEvent(new Event("input", { bubbles: true }));
+    closePop();
+    inp.focus();
+  }
+
+  function bindModelPicker() {
+    const inp = inputEl(), tog = $("#aiModelToggle"), pop = popEl();
+    if (!inp || !tog || !pop || inp.dataset.pickerBound) return;
+    inp.dataset.pickerBound = "1";
+    loadModels();
+
+    inp.addEventListener("focus", () => { if (models.length) openPop(); });
+    inp.addEventListener("input", () => {
+      // 打字就是在搜：这时才过滤，并把高亮重置到第一条
+      filtering = true;
+      if (popEl().hidden) openPop({ filter: true });
+      popIdx = -1;
+      renderPop();
+    });
+    inp.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { closePop(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        if (pop.hidden) openPop({ filter: false });
+        const n = visibleModels().length;
+        if (!n) return;
+        popIdx = e.key === "ArrowDown" ? (popIdx + 1) % n : (popIdx <= 0 ? n - 1 : popIdx - 1);
+        paintIdx();
+        return;
+      }
+      if (e.key === "Enter" && !pop.hidden && popIdx >= 0) {
+        e.preventDefault();
+        const m = visibleModels()[popIdx];
+        if (m) pick(m);
+      }
+    });
+    tog.addEventListener("click", (e) => {
+      e.preventDefault();
+      if (pop.hidden) { openPop({ filter: false }); inp.focus(); } else closePop();
+    });
+    // 点选：用 mousedown 抢在 blur 之前，否则面板先被关掉点不到
+    pop.addEventListener("mousedown", (e) => {
+      const it = e.target.closest(".popitem");
+      if (!it) return;
+      e.preventDefault();
+      const m = visibleModels()[Number(it.dataset.i)];
+      if (m) pick(m);
+    });
+    inp.addEventListener("blur", () => {
+      // 焦点移到面板内（点选）时不要关：mousedown 已 preventDefault，这里只管点外面。
+      // 注意还要放行「箭头按钮」：点它会让输入框失焦，若不豁免，120ms 后会把
+      // 刚被按钮打开的面板又关掉——第二次点箭头就变成了「点了没反应」。
+      setTimeout(() => {
+        if (document.activeElement?.closest?.(".modelpick")) return;
+        if (pop.matches(":hover")) return;
+        closePop();
+      }, 120);
+    });
+  }
+
+  // 向上游要模型列表（可下拉可手输，两边都不耽误）。
   // 拉取失败≠配置错：Open WebUI 文档明确说明部分服务商不提供 /models，
   // 此时按提示手填模型名即可，对话本身可用。
   async function fetchModels() {
@@ -210,10 +363,15 @@
           api_key: $("#aiKey").value.trim(),
         }),
       });
-      $("#aiModelList").innerHTML = d.models.map((m) => `<option value="${esc(m)}"></option>`).join("");
+      setModels(d.models);
       hint.textContent = `拉到 ${d.models.length} 个模型，点模型框可选`;
       // 只有一个候选就没得选，直接填上省一次点击
-      if (d.models.length === 1) $("#aiModel").value = d.models[0];
+      if (d.models.length === 1) {
+        $("#aiModel").value = d.models[0];
+      }
+      // 拉完直接把面板摊开：用户的下一步动作必然是「挑一个」，
+      // 让他再点一次箭头纯属浪费。列表已在本地，打开不产生请求。
+      openPop();
     } catch (e) {
       const msg = String(e.message || "");
       // 401/403 才是配置错；404/400 多半是这家不提供 /models，引导手填
@@ -234,6 +392,7 @@
     if (t) t.onclick = test;
     const f = $("#aiFetchModels");
     if (f) f.onclick = fetchModels;
+    bindModelPicker();
     const r = $("#aiPromptReset");
     if (r) r.onclick = () => {
       $("#aiExtra").value = defaultPrompt;

@@ -176,8 +176,15 @@
             <label class="frow"><span>Base URL</span><input id="aiBase" placeholder="https://api.deepseek.com/v1" /></label>
             <div id="aiProviderNote" class="minihint warnnote" hidden></div>
             <div class="frow"><span>模型</span>
-              <input id="aiModel" list="aiModelList" placeholder="deepseek-chat" autocomplete="off" />
-              <datalist id="aiModelList"></datalist>
+              <!-- 不用 <datalist>：Chrome 的 datalist 只有在输入时才会弹候选，
+                   点右侧箭头基本无反应（Chromium 老 bug），而且系统提示气泡会盖住下面一行。
+                   改成自绘面板后点一下就能列出全部模型，也能手输过滤。 -->
+              <div class="modelpick">
+                <input id="aiModel" placeholder="deepseek-chat" autocomplete="off"
+                       role="combobox" aria-expanded="false" aria-controls="aiModelPop" aria-autocomplete="list" />
+                <button id="aiModelToggle" class="pickbtn" type="button" aria-label="展开模型列表" title="展开全部模型">▾</button>
+                <div id="aiModelPop" class="modelpop" role="listbox" hidden></div>
+              </div>
               <button id="aiFetchModels" class="ghost mini" type="button" title="用当前 Base URL 与 Key 向上游要模型列表">拉取</button>
             </div>
             <label class="frow"><span>API Key</span><input id="aiKey" type="password" placeholder="留空表示不修改已保存的 Key" /></label>
