@@ -178,16 +178,81 @@ function renderSide() {
     .join("");
   applyClamp("#tagList", "#tagMore", state.openTags, "标签");
   applyClamp("#langList", "#langMore", state.openLangs, "语言");
+  updateSyncUI();
+}
+
+/* ---------------- 同步态：顶部进度条 + 按钮转圈 + 进度文字
+   单独抽出来是因为重试倒计时必须每秒自己走；而 renderSide 会重建标签/语言列表，
+   每秒调一次既闪又抢焦点。这里只碰 gbar / syncBtn / syncHint 三个节点。 */
+let syncTicker = null;
+function updateSyncUI() {
+  const st = state.status || {};
   const sync = st.sync || {};
-  $("#syncBtn").disabled = !!sync.running;
-  if (sync.running && sync.retry_at) {
-    const left = Math.max(0, Math.round((sync.retry_at - Date.now()) / 1000));
-    $("#syncHint").textContent = `配额用尽，${left}s 后重试`;
-  } else $("#syncHint").textContent = sync.running
-    ? `${sync.phase || "同步中"} ${sync.done}/${sync.total || "?"}`
-    : st.stars_synced_at
-      ? `上次同步 ${ago(st.stars_synced_at)}`
-      : "还没同步过";
+  const running = !!sync.running;
+  const total = Number(sync.total);
+  const done = Number(sync.done);
+  // total 未知时（还没翻到第一页）不能算百分比，走 indeterminate 动画
+  const known = Number.isFinite(total) && total > 0 && Number.isFinite(done);
+  const pct = known ? Math.max(0, Math.min(100, (done / total) * 100)) : 0;
+  const left = running && sync.retry_at ? Math.max(0, Math.round((sync.retry_at - Date.now()) / 1000)) : 0;
+  const quota = running && left > 0;
+
+  const bar = $("#gbar");
+  if (bar) {
+    bar.hidden = !running;
+    bar.classList.toggle("quota", quota);
+    bar.classList.toggle("indet", running && !quota && !known);
+    const fill = bar.firstElementChild;
+    if (fill && running && !quota && known) fill.style.width = pct.toFixed(1) + "%";
+  }
+
+  const btn = $("#syncBtn");
+  if (btn) {
+    btn.disabled = running;
+    btn.classList.toggle("busy", running && !quota);
+    btn.classList.toggle("quota", quota);
+    // 填充条：总量已知走真实百分比，未知走扫光
+    btn.classList.toggle("ifill", running && !quota && !known);
+    if (known && !quota) btn.style.setProperty("--sync-pct", pct.toFixed(1) + "%");
+  }
+  const label = $("#syncLabel");
+  // 按钮上直接带百分比：只靠一条填充条容易被读成「按钮里还有一层按钮」，
+  // 配上数字之后 37% 和填充宽度的对应关系一眼就成立。
+  if (label) {
+    label.textContent = running
+      ? (quota ? "等待重试" : known ? `同步中 ${Math.round(pct)}%` : "同步中…")
+      : "同步 GitHub";
+  }
+
+  const hint = $("#syncHint");
+  if (hint) {
+    hint.classList.toggle("busy", running && !quota);
+    hint.classList.toggle("quota", quota);
+    if (quota) hint.textContent = `配额用尽，约 ${left}s 后自动重试`;
+    else if (running) {
+      const phase = sync.phase || "同步中";
+      hint.textContent = known ? `${phase} ${done}/${total} · ${Math.round(pct)}%` : phase;
+    } else if (sync.error) hint.textContent = `上次同步失败：${sync.error}`;
+    else hint.textContent = st.stars_synced_at ? `上次同步 ${ago(st.stars_synced_at)}` : "还没同步过";
+  }
+
+  // 只有 retry_at 的倒计时需要靠定时器，其余状态变化都由 SSE 帧驱动
+  if (running && !syncTicker) syncTicker = setInterval(updateSyncUI, 1000);
+  else if (!running && syncTicker) { clearInterval(syncTicker); syncTicker = null; }
+}
+
+/* 同步收尾：进度条补满再淡出，给一个「跑完了」的闭合信号 */
+function flashGbar(err) {
+  const bar = $("#gbar");
+  if (!bar) return;
+  bar.hidden = false;
+  bar.classList.remove("indet");
+  bar.classList.toggle("quota", !!err);
+  bar.classList.add("done");
+  setTimeout(() => {
+    bar.classList.remove("done", "quota");
+    if (!(state.status && state.status.sync && state.status.sync.running)) bar.hidden = true;
+  }, 900);
 }
 
 /* ---------------- 卡片 */
@@ -1176,6 +1241,7 @@ function listenEvents() {
         renderSide();
       }
       if (d.type === "done") {
+        flashGbar(d.error);
         if (d.error) toast("同步失败：" + d.error, true);
         else toast("同步完成");
         // 事件回调里不能 await；显式吞掉 rejection，避免同步成功的提示已经弹出后

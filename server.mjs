@@ -859,10 +859,31 @@ function autoSyncRuntime(interval) {
     }),
   };
 }
+/* 自动同步的前置条件：必须有人登录着（或有 ENV_TOKEN 的无头部署）。
+   以前不看登录态，容器一启动就按「上次成功 + 间隔」立刻触发一次，
+   于是日志里出现「自动同步触发 → 同步失败：未配置 GITHUB_TOKEN」——
+   没人登录时去跑同步既没用又刷错误日志。 */
+let lastAutoSkip = "";
+function autoSyncSkipReason() {
+  if (!currentToken()) return "未登录（没有可用 token）";
+  // ENV_TOKEN 部署是无头的，本来就没有会话表记录，不能按会话判
+  if (ENV_TOKEN) return "";
+  const live = db.query("SELECT 1 AS x FROM sessions WHERE exp > ? LIMIT 1").get(Date.now());
+  return live ? "" : "当前没有登录会话";
+}
+
 function scheduleAutoSync() {
   if (autoSyncTimer) { clearTimeout(autoSyncTimer); autoSyncTimer = null; }
   const { enabled, interval } = autoSyncConfig();
-  if (!enabled) return;
+  if (!enabled) { lastAutoSkip = ""; return; }
+  const skip = autoSyncSkipReason();
+  if (skip) {
+    // 只在原因变化时打一条，别每轮都刷同一句
+    if (lastAutoSkip !== skip) log("info", `自动同步待命：${skip}，登录后自动开始`);
+    lastAutoSkip = skip;
+    return;
+  }
+  lastAutoSkip = "";
   // 定基准时间：成功过就用成功时间；一次没成功过（或上次是失败）就看上次尝试时间。
   // 都把失败算进基准，才不会出现「失败 → last_sync_ok 还是空 → 立刻重试」的忙循环。
   const { next_run_at } = autoSyncRuntime(interval);
@@ -871,6 +892,8 @@ function scheduleAutoSync() {
   autoSyncTimer = setTimeout(async () => {
     autoSyncTimer = null;
     if (syncState.running) { scheduleAutoSync(); return; }   // 手动同步正跑着，等下一轮
+    // 定时器排队期间用户可能登出了，落地前再确认一次，避免白跑一趟并写错误日志
+    if (autoSyncSkipReason()) { scheduleAutoSync(); return; }
     log("info", `自动同步触发（间隔 ${humanInterval(interval)}）`);
     await runSync("all");
     scheduleAutoSync();
@@ -1414,6 +1437,8 @@ const server = Bun.serve({
       setMeta("login", who.login);
       const sid = newSession(who.login);
       log("info", `登录成功：${who.login}`);
+      // 登录前自动同步一直待命（见 autoSyncSkipReason），这里补排一次，不必等重启
+      scheduleAutoSync();
       return new Response(JSON.stringify({
         ok: true, login: who.login, name: who.name || who.login, avatar: who.avatar_url,
       }), {
@@ -1427,6 +1452,8 @@ const server = Bun.serve({
     if (p === "/api/auth/logout" && req.method === "POST") {
       const sid = sidFromReq(req);
       if (sid) db.query("DELETE FROM sessions WHERE sid=?").run(sid);
+      // 登出即停自动同步（还留着别的设备会话就继续跑）
+      scheduleAutoSync();
       return new Response(JSON.stringify({ ok: true }), {
         headers: {
           "content-type": "application/json; charset=utf-8",

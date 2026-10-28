@@ -13,6 +13,8 @@
 <meta name="theme-color" content="#131417" />
 </head>
 <body>
+<!-- 全局同步进度条：同步进行时贴在视口顶端，done/total 未知时走 indeterminate 动画 -->
+<div id="gbar" hidden><i></i></div>
 <div id="app">
   <aside class="side">
     <div class="brand">
@@ -76,7 +78,7 @@
     </div><!-- /sidebody -->
 
     <div class="sidefoot">
-      <button type="button" id="syncBtn" class="primary">同步 GitHub</button>
+      <button type="button" id="syncBtn" class="primary" aria-live="polite"><span class="spin" aria-hidden="true"></span><span id="syncLabel">同步 GitHub</span><i class="fbar" aria-hidden="true"></i></button>
       <div class="footrow">
         <button type="button" id="expBtn" class="ghost" title="导出 JSON 备份（标签+自定义简介）">导出备份</button>
         <button type="button" id="setBtn" class="ghost" data-view="settings" title="设置：AI 接入等">⚙ 设置</button>

@@ -168,7 +168,41 @@ button { cursor: pointer; }
 .quickrow .chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
 .sidefoot { margin-top: auto; display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 8px; }
-.sidefoot .primary { padding: 8px 12px; }
+/* 同步按钮：转圈 + 文案 + 底部填充条。结构固定只切 class，
+   否则每次 renderSide 重建 innerHTML 会让转圈动画从中断处重来，看着像卡顿。 */
+.sidefoot .primary {
+  padding: 8px 12px; position: relative; overflow: hidden;
+  display: flex; align-items: center; justify-content: center; gap: 7px;
+}
+#syncBtn .spin {
+  display: none; flex: 0 0 auto; width: 12px; height: 12px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent-fg) 40%, transparent);
+  border-top-color: var(--accent-fg); animation: radar-spin .8s linear infinite;
+}
+#syncBtn.busy .spin, #syncBtn.quota .spin { display: inline-block; }
+/* bus 中不禁用到看不清：disabled 的 .55 透明度会连进度条一起糊掉 */
+#syncBtn.busy, #syncBtn.quota { opacity: .92; }
+#syncBtn.quota { background: var(--warn); color: #1a1206; }
+#syncBtn.quota .spin { border-color: #1a120633; border-top-color: #1a1206; }
+#syncLabel { white-space: nowrap; font-variant-numeric: tabular-nums; }
+/* 进度画在按钮里，但**不能有竖线边界**：竖线会正好穿过「同步中 37%」的文字，看着像字被切断。
+   改成「整块淡色填充 + 底部一条 3px 实底」：底部那条画到哪就是进度到哪，文字始终在填充之上。 */
+#syncBtn .spin, #syncBtn #syncLabel { position: relative; z-index: 1; }
+#syncBtn .fbar {
+  position: absolute; left: 0; top: 0; bottom: 0; width: var(--sync-pct, 0);
+  background: color-mix(in srgb, var(--accent-fg) 11%, transparent);
+  transition: width .35s ease; pointer-events: none;
+}
+#syncBtn .fbar::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 3px;
+  background: var(--accent-fg); opacity: .8;
+}
+#syncBtn.quota .fbar { background: #1a12061f; }
+#syncBtn.quota .fbar::after { background: #1a1206; }
+/* 总量未知（还没翻到第一页）：一段扫光来回跑，代替无法计算的百分比 */
+#syncBtn.ifill .fbar { width: 32%; animation: radar-sweep 1.1s ease-in-out infinite; }
+@keyframes radar-spin { to { transform: rotate(360deg); } }
+@keyframes radar-sweep { 0% { transform: translateX(-110%); } 100% { transform: translateX(420%); } }
 .sidebody + .sidefoot { margin-top: 0; }
 @media (max-width: 860px) {
   .sidefoot { border-top: 0; padding-top: 0; }
@@ -184,6 +218,9 @@ button { cursor: pointer; }
 }
 .ghost:hover { border-color: var(--accent-2); color: var(--text); }
 .minihint { font-size: 11px; color: var(--text-faint); text-align: center; line-height: 1.35; }
+/* 同步中：换成强调色 + 等宽数字，避免 done/total 跳动时整行抖 */
+.minihint.busy { color: var(--accent); font-variant-numeric: tabular-nums; }
+.minihint.quota { color: var(--warn); font-variant-numeric: tabular-nums; }
 /* 设置页里的说明文字：靠左，居中会让「容器里要用宿主地址」这种长句读起来断气 */
 .set-sec .minihint { text-align: left; font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
 .set-sec .minihint.ok { color: var(--accent); }
@@ -198,6 +235,17 @@ button { cursor: pointer; }
 
 /* ---------------- 主区 */
 .main { padding: 16px 22px 40px; min-width: 0; }
+/* 全局同步进度条：固定贴视口顶端。作者类盖掉 [hidden] 是项目里的老坑，显式兜一条 */
+#gbar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 90; pointer-events: none; overflow: hidden; }
+#gbar[hidden] { display: none !important; }
+#gbar > i {
+  display: block; height: 100%; width: 0; background: var(--accent);
+  box-shadow: 0 0 8px var(--accent); transition: width .35s ease;
+}
+#gbar.indet > i { width: 32%; animation: radar-sweep 1.1s ease-in-out infinite; }
+#gbar.done > i { width: 100%; transition: width .2s ease; }
+#gbar.quota > i { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+
 .topbar { display: flex; gap: 10px; margin-bottom: 12px; position: sticky; top: 0; z-index: 5;
   background: linear-gradient(var(--bg) 70%, transparent); padding: 4px 0 10px; }
 /* 同 .discoverbar[hidden]：作者写的 display:flex 会盖掉 UA 的 [hidden]{display:none}，
