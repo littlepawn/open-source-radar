@@ -1,0 +1,17 @@
+{
+  "name": "开源雷达 · 我的 GitHub 收藏看板",
+  "short_name": "开源雷达",
+  "description": "本地管理 GitHub Star 与 Fork 仓库：中文简介、分类标签、待读队列、停滞提醒与发现热门。",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#131417",
+  "theme_color": "#131417",
+  "lang": "zh-CN",
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
