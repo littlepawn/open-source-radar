@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   estimateTokens, clip, pickKeyFiles, topDirs, buildMessages, AI_PRESETS, validateAiConfig,
-  matchProvider, normalizeModels, resolveBaseUrl, presetById,
+  matchProvider, normalizeModels, resolveBaseUrl, presetById, explainConnError,
 } from "../lib/ai.mjs";
 
 describe("estimateTokens", () => {
@@ -288,5 +288,41 @@ describe("presetById", () => {
   test("未知地址返回 null（前端显示「自定义」）", () => {
     expect(presetById("https://unknown.example.com/v1")).toBe(null);
     expect(presetById("")).toBe(null);
+  });
+});
+
+describe("explainConnError：容器内 127.0.0.1 的提示", () => {
+  const connErr = () => new Error("Unable to connect. Is the computer able to access the url?");
+
+  test("容器 + 回环地址 → 提示换 host.docker.internal 并带上端口", () => {
+    const m = explainConnError(connErr(), "http://127.0.0.1:3425/v1", { inDocker: true });
+    expect(m).toContain("127.0.0.1 指的是容器自己");
+    expect(m).toContain("host.docker.internal:3425");
+  });
+
+  test("容器 + localhost 也算回环", () => {
+    expect(explainConnError(connErr(), "http://localhost:11434/v1", { inDocker: true }))
+      .toContain("host.docker.internal:11434");
+  });
+
+  test("宿主直跑 + 回环地址 → 提示确认服务已启动，不提容器", () => {
+    const m = explainConnError(connErr(), "http://127.0.0.1:3425/v1");
+    expect(m).toContain("确认那个端口上的服务已经启动");
+    expect(m).not.toContain("host.docker.internal");
+  });
+
+  test("容器 + 远程域名 → 不改写地址，只带原始原因", () => {
+    const m = explainConnError(connErr(), "https://api.deepseek.com/v1", { inDocker: true });
+    expect(m).toContain("api.deepseek.com");
+    expect(m).not.toContain("host.docker.internal");
+  });
+
+  test("非连接类错误原样透传，不被改写成「连不上」", () => {
+    const raw = "AI 接口 401：invalid api key";
+    expect(explainConnError(new Error(raw), "https://x/v1", { inDocker: true })).toBe(raw);
+  });
+
+  test("域名不规范也不崩，仍给可读提示", () => {
+    expect(explainConnError(connErr(), "not a url", { inDocker: true })).toContain("连不上");
   });
 });

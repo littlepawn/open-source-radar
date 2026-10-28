@@ -25,7 +25,7 @@ import { ruleDigest } from "./lib/rules.mjs";
 import { readRate, mergeRate, rateFor, rateText } from "./lib/ratelimit.mjs";
 import {
   pickKeyFiles, buildMessages, validateAiConfig, resolveBaseUrl, normalizeModels,
-  matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT,
+  matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT, explainConnError,
 } from "./lib/ai.mjs";
 // 查询参数统一收敛：NaN / 越界都回落到默认，不让脏输入进 SQL 或纯函数
 function clampNum(v, fallback, lo, hi) {
@@ -293,6 +293,11 @@ function currentToken() {
 /* ---------------------------------------------------------------- AI 配置
    key 存在 auth 表（与 GitHub token 同一套 AES-256-GCM），meta 表只存不含密钥的字段。
    读取时 key 永远只回 "已配置/未配置"，绝不落到 HTTP 响应里。            */
+// 是否跑在容器里（Docker 会在根目录建 /.dockerenv）。用来判断用户填 127.0.0.1
+// 时该不该提示换成 host.docker.internal —— 容器内回环地址是容器自己，
+// 访问不到宿主上的 Ollama / one-api / magpie 之类服务。
+const IN_DOCKER = existsSync("/.dockerenv");
+
 const AI_DEFAULTS = {
   enabled: false,
   base_url: "https://api.deepseek.com/v1",
@@ -369,21 +374,28 @@ async function aiChat(messages, cfg) {
   const key = aiKey();
   if (!key) throw new Error("未配置 AI API Key（在「AI 设置」里填）");
   const url = `${resolveBaseUrl(cfg.base_url)}/chat/completions`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${key}`,
-    },
-    body: JSON.stringify({
-      model: cfg.model,
-      messages,
-      max_tokens: Number(cfg.max_tokens) || 2000,
-      temperature: Number(cfg.temperature) ?? 0.2,
-      stream: false,
-    }),
-    signal: AbortSignal.timeout(120000),
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${key}`,
+      },
+      body: JSON.stringify({
+        model: cfg.model,
+        messages,
+        max_tokens: Number(cfg.max_tokens) || 2000,
+        temperature: Number(cfg.temperature) ?? 0.2,
+        stream: false,
+      }),
+      signal: AbortSignal.timeout(120000),
+    });
+  } catch (e) {
+    // Bun 的 fetch 连不上时只给一句英文 "Unable to connect. Is the computer able to access the url?"，
+    // 用户完全看不出是「容器里的 127.0.0.1 是容器自己」。
+    throw new Error(explainConnError(e, cfg.base_url, { inDocker: IN_DOCKER }));
+  }
   const text = await res.text();
   if (!res.ok) {
     // 中转站常把真实原因塞在 body 里，别只报状态码
@@ -395,8 +407,25 @@ async function aiChat(messages, cfg) {
   }
   let data;
   try { data = JSON.parse(text); } catch { throw new Error("AI 接口返回的不是 JSON"); }
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error("AI 返回空内容");
+  const choice = data?.choices?.[0] || {};
+  const content = choice.message?.content;
+  const reasoning = choice.message?.reasoning_content;
+  if (!content) {
+    // 推理模型（deepseek-v4 / o 系列 / QwQ 等）先输出 reasoning_content 再给 content。
+    // max_tokens 太小的话 token 全花在思考上，content 就是 null —— 直接报「返回空内容」
+    // 会让人以为是地址或 key 错了。实测 magpie 的 group/smart-split 在 max_tokens=20 时
+    // 必然踩这条，2000 时正常返回。
+    if (reasoning) {
+      throw new Error(
+        `AI 只输出了思考过程、没有正文（当前上限 ${Number(cfg.max_tokens) || 2000} tokens）。` +
+        `推理模型要先花 token 思考，把这个值调大（建议 2000 以上）再试。`
+      );
+    }
+    if (choice.finish_reason === "length") {
+      throw new Error(`AI 输出被截断（max_tokens=${Number(cfg.max_tokens) || 2000}），调大后重试。`);
+    }
+    throw new Error("AI 返回空内容");
+  }
   return { content, usage: data.usage || null, model: data.model || cfg.model };
 }
 
@@ -1558,6 +1587,9 @@ const server = Bun.serve({
           return json({
             ...cfg,
             presets: AI_PRESETS,
+            // 容器里 127.0.0.1 指的是容器自己，填宿主机上的 Ollama / one-api / magpie
+            // 会一直报 "Unable to connect"。前端据此提示该换 host.docker.internal。
+            in_docker: IN_DOCKER,
             provider: prov.id,
             provider_kind: prov.kind,
             provider_label: prov.label,
@@ -1618,14 +1650,16 @@ const server = Bun.serve({
           if (!ids.length) return json({ error: "上游没返回任何模型", raw: text.slice(0, 300) }, 502);
           return json({ ok: true, models: ids });
         } catch (e) {
-          return json({ error: e.name === "TimeoutError" ? "上游 15 秒没响应" : e.message }, 502);
+          return json({ error: e.name === "TimeoutError" ? "上游 15 秒没响应" : explainConnError(e, baseUrlRaw, { inDocker: IN_DOCKER }) }, 502);
         }
       }
       if (p === "/api/ai/test" && req.method === "POST") {
         const cfg = getAiConfig();
         if (!cfg.base_url || !cfg.model) return json({ error: "先填 base_url 与 model" }, 400);
         try {
-          const r = await aiChat([{ role: "user", content: "只回复两个字：可用" }], { ...cfg, max_tokens: 20 });
+          // 不能压到 20：推理模型光思考就吃光 token，content 变 null，
+          // 用户看到「AI 返回空内容」会以为地址填错。给足 1024。
+          const r = await aiChat([{ role: "user", content: "只回复两个字：可用" }], { ...cfg, max_tokens: 1024 });
           return json({ ok: true, reply: r.content.slice(0, 200), model: r.model });
         } catch (e) {
           return json({ error: e.message }, 502);

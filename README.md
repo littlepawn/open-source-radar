@@ -109,11 +109,25 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.3.0` / `latest`（digest `sha256:ef8b3729`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.3.3` / `latest`（digest `sha256:fe1813b3`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
 
 ```bash
-docker pull littlepawn/open-source-radar:2.3.0
+docker pull littlepawn/open-source-radar:2.3.3
 ```
+
+> **接本机 AI 服务时注意**：容器里的 `127.0.0.1` 是容器自己，不是你的电脑。
+>
+> 宿主机上跑 Ollama / one-api / magpie 之类的 OpenAI 兼容网关时，Base URL 要填
+>
+> ```
+> http://host.docker.internal:端口/v1
+> ```
+>
+> Docker Desktop（macOS / Windows）原生支持这个域名；Linux 需给容器加
+> `--add-host=host.docker.internal:host-gateway`。填成 `127.0.0.1` 时面板会直接提示怎么改。
+
+> **AI 返回「只输出了思考过程」**：推理模型（deepseek-v4 / o 系列 / QwQ 等）先输出
+> 思维链再给正文，`单次上限 tokens` 太小会把额度全花在思考上。调到 2000 以上即可。
 
 ---
 
