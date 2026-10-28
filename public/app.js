@@ -214,11 +214,13 @@ function cardHTML(r, ctx = "repo") {
     ${r.note ? `<div class="note" title="我的备注">✎ ${esc(r.note)}</div>` : ""}
     ${tags.length ? `<div class="rowtags">${tags.map((t) => `<button class="chip" data-tag="${esc(t)}" data-stop>${esc(t)}</button>`).join("")}</div>` : ""}
     <div class="foot">
-      <span>★ ${fmt(r.stars)}</span>
-      <span class="lang">${esc(r.language || "—")}</span>
-      ${r.upstream ? `<span class="up">fork 自 ${esc(r.upstream)}</span>` : ""}
-      <span>${ctx === "discover" ? "建于" : r.source === "fork" ? "fork 于" : "star 于"} ${ago(ctx === "discover" ? r.created_at : (r.starred_at || r.pushed_at))}</span>
-      ${r.latest_tag ? `<span class="sp">${esc(r.latest_tag)} · ${ago(r.latest_release_at)}</span>` : '<span class="sp"></span>'}
+      <span class="meta">
+        <span>★ ${fmt(r.stars)}</span>
+        <span class="lang">${esc(r.language || "—")}</span>
+        ${r.upstream ? `<span class="up">fork 自 ${esc(r.upstream)}</span>` : ""}
+        <span>${ctx === "discover" ? "建于" : r.source === "fork" ? "fork 于" : "star 于"} ${ago(ctx === "discover" ? r.created_at : (r.starred_at || r.pushed_at))}</span>
+        ${r.latest_tag ? `<span class="tagline">${esc(r.latest_tag)} · ${ago(r.latest_release_at)}</span>` : ""}
+      </span>
       <span class="quick">
         <button class="act ${r.toread ? "on" : ""}" data-act="qtoread" title="${r.toread ? "移出待读" : "加入待读"}">${r.toread ? "✓待读" : "待读"}</button>
         <button class="act ${r.dropped ? "on" : ""}" data-act="qdrop" title="${r.dropped ? "取消放弃标记" : "标记放弃（不会取消 star）"}">${r.dropped ? "✓放弃" : "放弃"}</button>
