@@ -12,6 +12,10 @@ services:
     volumes:
       - radar-data:/data
     environment:
+      # NAS（群晖/威联通）上把这两个改成宿主目录的属主，否则库文件归 root，
+      # 宿主侧要 sudo 才能读。查法：SSH 里 id 你的用户名
+      # PUID: ${PUID:-1000}
+      # PGID: ${PGID:-1000}
       # 可选：设了环境变量 token 就免登录（单用户自托管最省事）
       # GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       # 会话与加密密钥；不设会自动生成并持久化在 /data/radar.db 里

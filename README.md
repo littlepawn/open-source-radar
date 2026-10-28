@@ -119,8 +119,26 @@ docker compose up -d
 | `PORT` | `8788` | 容器内监听端口 |
 | `HOST` | `0.0.0.0` | 容器里必须 0.0.0.0 才能从外部访问 |
 | `DATA_DIR` | `/data` | 数据库目录 |
+| `PUID` / `PGID` | `1000` / `1000` | 容器进程的 uid/gid，NAS 上建议改成宿主目录属主 |
 | `SESSION_SECRET` | 自动生成 | 会话与 token 加密密钥，建议自己设一个固定值 |
 | `GITHUB_TOKEN` | 无 | 设了就免登录 |
+
+**群晖 / 威联通 / unraid 部署**
+
+镜像同时发布 `linux/amd64` 与 `linux/arm64` 两个架构，x86 群晖、ARM 机型都能直接拉。挂载宿主目录时要注意属主：
+
+- NAS 上新建的共享目录通常归 `root`，容器默认以 uid `1000` 运行，写不进 `/data` 会表现为**容器反复重启**（日志里是 `unable to open database file`）。
+- 镜像启动时会先以 root 修正 `/data` 属主，再用 `su` 降权执行，进程本身不是 root。想让库文件归你自己的 NAS 账号，加 `-e PUID=1026 -e PGID=100`（群晖用户一般从 1026 起，可在 SSH 里 `id 你的用户名` 查）。
+- 只读挂载或 NFS `root_squash` 下无法 chown，启动日志会打一条 `[warn] 无法修改 /data 属主`，此时应改用命名卷。
+
+```bash
+docker run -d --name open-source-radar \
+  -p 8788:8788 \
+  -v /volume1/docker/radar:/data \
+  -e PUID=1026 -e PGID=100 \
+  -e TZ=Asia/Shanghai \
+  littlepawn/open-source-radar:latest
+```
 
 **本地构建**
 
@@ -134,11 +152,25 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.0` / `latest`（digest `sha256:51edc200`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.2` / `latest`（多架构 manifest：`linux/amd64` + `linux/arm64`，digest `sha256:78fa8a36`），基于 `oven/bun:1.2-alpine`，约 107MB。
 
 ```bash
-docker pull littlepawn/open-source-radar:2.4.0
+docker pull littlepawn/open-source-radar:2.4.2
 ```
+
+> 发布多架构镜像时不要只用 `docker build && docker push`：在 Apple Silicon 上构建出来只有 `arm64`，x86 设备拉下来会报 `exec format error`。正确做法是分架构构建后合成 manifest list：
+>
+> ```bash
+> docker build --platform linux/amd64 -t littlepawn/open-source-radar:VER-amd64 .
+> docker build --platform linux/arm64 -t littlepawn/open-source-radar:VER-arm64 .
+> docker push littlepawn/open-source-radar:VER-amd64
+> docker push littlepawn/open-source-radar:VER-arm64
+> docker manifest create littlepawn/open-source-radar:VER \
+>   littlepawn/open-source-radar:VER-amd64 littlepawn/open-source-radar:VER-arm64
+> docker manifest push littlepawn/open-source-radar:VER
+> ```
+>
+> `docker manifest create` 加 `--amend` 是**追加**而不是替换，重复跑会出现同一架构两条记录，需先 `docker manifest rm` 再重建。
 
 > **接本机 AI 服务时注意**：容器里的 `127.0.0.1` 是容器自己，不是你的电脑。
 >

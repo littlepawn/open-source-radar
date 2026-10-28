@@ -18,17 +18,23 @@ WORKDIR /app
 COPY server.mjs ./server.mjs
 COPY lib ./lib
 COPY public ./public
+COPY entrypoint.sh ./entrypoint.sh
 
 # 数据目录：镜像内建好并交给 bun 用户写（挂载卷覆盖时仍可用）
-RUN mkdir -p /data && chown -R bun:bun /app /data
+# chmod a+rX：设了 PUID/PGID（如群晖 1026）时进程不是 bun，而 COPY 会保留
+# 宿主的 0600 权限，不放宽会 EACCES reading /app/lib/*.mjs
+RUN mkdir -p /data && chown -R bun:bun /app /data \
+    && chmod +x /app/entrypoint.sh \
+    && chmod -R a+rX /app
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
     PORT=8788 \
     DATA_DIR=/data
 
-USER bun
-
+# 以 root 启动只为在 entrypoint 里修正挂载目录属主，随后 setpriv 降权到
+# PUID/PGID（默认 1000:1000），进程不以 root 运行。
+# 群晖这类宿主目录归 root 的 NAS 上，硬写 USER bun 会因写不进 /data 而反复重启。
 EXPOSE 8788
 VOLUME ["/data"]
 
@@ -39,4 +45,5 @@ VOLUME ["/data"]
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD wget -q -O /dev/null "http://127.0.0.1:${PORT}/login" || exit 1
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 CMD ["bun", "server.mjs"]
