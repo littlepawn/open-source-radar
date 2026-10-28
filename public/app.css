@@ -208,7 +208,11 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .crumb b { color: var(--text-dim); font-weight: 500; }
 
 .cards {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 12px;
+  display: grid; gap: 12px;
+  /* minmax 的 380px 是下限，但 1fr 追的是「内容最小宽度」——卡片里有 nowrap 的
+     元素（按钮、repo 名）时，栅格列会被撑到 589px，420px 视口下整排右溢出。
+     min(380px, 100%) 让下限在窄视口自动让步。 */
+  grid-template-columns: repeat(auto-fill, minmax(min(380px, 100%), 1fr));
   /* 默认 stretch：同一行的卡片按该行最高的那张等高，短卡片不留下参差的空白。
      卡片内部已是 flex 列 + .foot{margin-top:auto}，底部信息会贴到卡片底边。 */
   align-items: stretch;
@@ -216,6 +220,9 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .card {
   background: var(--bg-card); border: 1px solid var(--line); border-radius: var(--radius);
   padding: 13px 14px; display: flex; flex-direction: column; gap: 8px;
+  /* 栅格项默认 min-width:auto：卡片内有 nowrap 元素时会把整列撑到内容宽度
+     （实测 420px 视口下列宽 589px）。必须显式归零，min() 的让步才真正生效。 */
+  min-width: 0;
   transition: border-color .15s, transform .15s;
   cursor: pointer;
 }
@@ -241,14 +248,28 @@ select:focus-visible, .drawer textarea:focus-visible, .tokenfield input:focus-vi
 .signals li::before { content: "·"; color: var(--warn); margin-right: 6px; }
 .rowtags { display: flex; flex-wrap: wrap; gap: 5px; }
 .rowtags .chip { font-size: 11px; padding: 2px 8px; cursor: pointer; }
+/* 卡片底部固定两区：左边元信息、右边快捷按钮。
+   早先是「6~7 个裸 span + margin-left:auto 的 spacer」，出现 latest_tag 的卡片
+   元素多一个就折行，于是同类卡片一行/两行混杂——用户看到的就是「有的单行有的分行」。
+   现在 .meta 占满剩余宽度并单行截断，.quick 固定不换行，所有卡片底部恒为一行 23px。 */
 .foot { display: flex; align-items: center; gap: 12px; color: var(--text-faint); font-size: 11.5px; margin-top: auto; }
+.foot .meta {
+  display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1 1 auto;
+  overflow: hidden; white-space: nowrap;
+}
+.foot .meta > span { white-space: nowrap; }
+/* 被截断的只会是最右那段（版本号/时间），git 仓库名不会被截 */
+.foot .meta .tagline { overflow: hidden; text-overflow: ellipsis; }
 .foot .lang::before { content: "●"; margin-right: 4px; color: var(--accent-2); }
 .foot .sp { margin-left: auto; }
-.act { background: none; border: 0; color: var(--text-faint); padding: 2px 5px; border-radius: 6px; font-size: 12px; }
+/* nowrap：按钮文字是名词短语（待读/放弃/隐藏/详情），中文在窄容器里会逐字断行，
+   实测卡片被挤窄时「待读」竖排成「待/读」、「取消隐藏」断成三行。 */
+.act { background: none; border: 0; color: var(--text-faint); padding: 2px 5px; border-radius: 6px; font-size: 12px; white-space: nowrap; }
 .act:hover { background: var(--bg-hover); color: var(--text); }
 /* 卡片快捷动作：常显。试过 hover 才显形，但 hover 态在部分浏览器/触屏上不可靠，
    而用户要的就是「不进抽屉就能操作」——藏起来等于没做。 */
-.card .quick { display: flex; gap: 2px; }
+/* 不许换行：按钮逐个折行会让同一排卡片高度参差 */
+.card .quick { display: flex; gap: 2px; flex-wrap: nowrap; flex: 0 0 auto; }
 .card .quick .act.on { color: var(--accent); }
 
 .empty { text-align: center; color: var(--text-faint); padding: 60px 0; }
@@ -356,11 +377,15 @@ a.link { color: var(--accent-2); }
   #sort, #refreshReadme { flex: 1 1 0; }
   .cards { grid-template-columns: 1fr; }
   .discoverbar input { min-width: 100%; }
-  .foot { flex-wrap: wrap; gap: 6px 10px; }
+  /* 窄屏也不换行：.meta 是 flex:1 会自动让位并截断，换行只会让少数卡片
+     变成两行、和同排其他卡片高度不一致（420px 实测 [23, 46] 混杂）。
+     真挤不下时收 gap，而不是折行。 */
+  .foot { gap: 8px; }
+  .foot .meta { gap: 8px; }
   .foot .sp { margin-left: auto; }
 }
 
-.foot .up { color: var(--text-faint); font-size: 11px; }
+.foot .up { color: var(--text-faint); font-size: 11px; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
 /* ================= 登录页 ================= */
 .auth-body { display: grid; place-items: center; min-height: 100vh; padding: 24px; }
