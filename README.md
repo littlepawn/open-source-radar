@@ -1,8 +1,30 @@
-# 开源雷达 · 我的 GitHub 收藏本地看板
+<p align="center">
+  <img src="public/icon-192.png" width="104" height="104" alt="开源雷达" />
+</p>
 
-把 **starred** 和 **fork** 仓库拉到本地 SQLite，自动写中文简介和标签，用一个网页看板搜索、筛选、分类管理；另外带「发现热门开源项目」与「跟踪新版本」。
+<h1 align="center">开源雷达</h1>
 
-零第三方依赖：只用 Bun 内置（`Bun.serve` + `bun:sqlite` + `fetch`），前端是手写 HTML/CSS/JS，没有构建步骤。
+<p align="center">把 GitHub 的 Star 与 Fork 拉回本地，做成一页可搜、可筛、可分类的收藏看板</p>
+
+<p align="center">
+  <a href="https://hub.docker.com/r/littlepawn/open-source-radar"><img src="https://img.shields.io/docker/pulls/littlepawn/open-source-radar?logo=docker&logoColor=white" alt="Docker Pulls" /></a>
+  <a href="https://hub.docker.com/r/littlepawn/open-source-radar"><img src="https://img.shields.io/docker/v/littlepawn/open-source-radar?sort=semver&logo=docker&logoColor=white" alt="Docker Image Version" /></a>
+  <a href="https://github.com/littlepawn/open-source-radar/stargazers"><img src="https://img.shields.io/github/stars/littlepawn/open-source-radar?logo=github" alt="GitHub stars" /></a>
+  <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Runtime: Bun" />
+  <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero dependencies" />
+</p>
+
+<p align="center">
+  把 <b>starred</b> 和 <b>fork</b> 仓库拉到本地 SQLite，自动写中文简介和标签，用一个网页看板搜索、筛选、分类管理；另外带「发现热门开源项目」与「跟踪新版本」。
+</p>
+
+<p align="center">
+  <sub>零第三方依赖 · 单文件服务端 · 数据只存你自己的 SQLite</sub>
+</p>
+
+---
+
+**零第三方依赖**：只用 Bun 内置（`Bun.serve` + `bun:sqlite` + `fetch`），前端是手写 HTML/CSS/JS，没有构建步骤。
 
 > 官方 REST 没有 GitHub Lists 端点（`GET /user/lists` 实测 404），所以分类全部存本地 SQLite，不回写 GitHub。
 

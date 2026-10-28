@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- 侧栏/登录页 22px 专用版：与 icon.svg 同一套几何（外环 + 扇面 + 回波点），
+       但笔画按小尺寸重算——icon.svg 是 64px 视图，缩到 20px 时外环只有 1.25px，
+       内环退化成灰边，扇面糊成一团，看上去就是个空心圆。
+       这里去掉内环、外环加粗到 6、扇面开角放大，保证 22px 下仍是「雷达」。 -->
+  <rect width="64" height="64" rx="14" fill="#131417"/>
+  <circle cx="32" cy="32" r="23.5" fill="none" stroke="#8ab4f8" stroke-width="6" opacity=".6"/>
+  <path d="M32 32 L32 8.5 A23.5 23.5 0 0 1 52.75 20.97 Z" fill="#8ab4f8"/>
+  <circle cx="44" cy="44" r="5.5" fill="#e3b341"/>
+</svg>

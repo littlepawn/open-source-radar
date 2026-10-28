@@ -110,7 +110,7 @@ button { cursor: pointer; }
 }
 .sidebody.at-top.at-bottom { mask-image: none; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 6px; }
-.brand .logo { width: 20px; height: 20px; border-radius: 5px; flex: 0 0 auto; display: block; }
+.brand .logo { width: 22px; height: 22px; border-radius: 5px; flex: 0 0 auto; display: block; }
 .brand b { display: block; font-size: 15px; letter-spacing: .3px; }
 .brand small { color: var(--text-faint); font-size: 11.5px; }
 .brand .icon { margin-left: auto; }
@@ -473,7 +473,7 @@ a.link { color: var(--accent-2); }
   padding: 26px 26px 22px; box-shadow: var(--shadow);
 }
 .auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
-.auth-brand .logo { width: 24px; height: 24px; border-radius: 6px; flex: 0 0 auto; display: block; }
+.auth-brand .logo { width: 26px; height: 26px; border-radius: 6px; flex: 0 0 auto; display: block; }
 .auth-brand b { display: block; font-size: 16px; letter-spacing: .3px; }
 .auth-brand small { color: var(--text-faint); font-size: 12px; }
 .auth-card h1 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
