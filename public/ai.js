@@ -28,6 +28,9 @@
   let defaultPrompt = "";
   let providerKind = "openai";   // 后端 matchProvider() 判定，见 /api/ai/config 的 provider_kind
   let providerLabel = "";
+  // 面板是否跑在 Docker 里。容器内的 127.0.0.1 是容器自己，填本机模型/中转会连不上，
+  // 得换成 host.docker.internal —— 这是新用户最容易卡住的一步，直接写在框下提示。
+  let inDocker = false;
 
   // 用户动过的字段。每次进设置页都会 load() 一次，若无条件回填，
   // 用户填一半切走再回来就被冲成已保存的值——和发现页阈值被重置是同一类问题。
@@ -69,6 +72,7 @@
       defaultPrompt = cfg.default_extra_prompt || "";
       providerKind = cfg.provider_kind || "openai";
       providerLabel = cfg.provider_label || "";
+      inDocker = !!cfg.in_docker;
       const sel = $("#aiPreset");
       // 选项只建一次：重复 innerHTML 会把用户当前选中项冲掉。
       // 判断用「只有占位项」而不是 !options.length——HTML 里已经预置了
@@ -137,6 +141,13 @@
       "api.minimaxi.com": "MiniMax 不提供标准 /models 列表，请直接手填模型名（如 abab6.5s-chat）。",
     };
     if (NOTES[host]) { el.textContent = NOTES[host]; el.hidden = false; return; }
+    // 容器内填回环地址必然是错的：先给这条，比「连不上」有用得多
+    if (inDocker && /^(127\.0\.0\.1|localhost|0\.0\.0\.0)$/i.test(host)) {
+      el.textContent = "面板跑在 Docker 里，127.0.0.1 指的是容器自己，连不到你电脑上的服务。宿主机上的 Ollama / one-api / magpie 请填 http://host.docker.internal:" +
+        (u.match(/:\d+/)?.[0].slice(1) || "端口") + "/v1";
+      el.hidden = false;
+      return;
+    }
     if (/models\.github\.ai|models\.inference\.ai\.azure\.com/.test(host)) {
       el.textContent = "GitHub Models 不提供标准 /models 列表，请手填模型名（如 openai/gpt-4o-mini）。";
       el.hidden = false;
