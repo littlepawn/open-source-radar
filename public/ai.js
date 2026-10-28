@@ -265,12 +265,14 @@
     const pop = popEl(), inp = inputEl();
     if (!pop || !inp || inp.disabled) return;
     filtering = filter;
+    // 先算 popIdx 再 renderPop：renderPop 内部会 paintIdx()，反过来的话
+    // 打开面板时高亮永远停在第 1 行，而 popIdx 实际是「已填值的位置」，
+    // 第一次按 ↓ 会跳到第 2 项而不是当前位置的下一项。
+    // 已填的值落在列表里就定位到它，否则从第一条开始
+    popIdx = visibleModels().indexOf(inp.value.trim());
     renderPop();
     pop.hidden = false;
     inp.setAttribute("aria-expanded", "true");
-    // 已填的值落在列表里就定位到它，否则从第一条开始
-    const cur = inp.value.trim();
-    popIdx = visibleModels().indexOf(cur);
   }
 
   function closePop() {
@@ -451,13 +453,22 @@
     return Number.isInteger(h) ? `${h} 小时` : `${Math.floor(h)} 小时 ${n % 60} 分钟`;
   }
 
+  // 自动同步这块用户改动过、还没保存的字段。与上面 TRACKED/dirty 同一套思路。
+  const asDirty = new Set();
+
   async function loadAutoSync() {
     if (!$("#asEnabled")) return;
     try {
       const d = await api("/api/settings/autosync");
       asCfg = { ...asCfg, ...d };
-      $("#asEnabled").checked = !!d.enabled;
-      $("#asInterval").value = d.interval;
+      // 用户改过但还没保存的，别用服务端旧值冲掉：同一段「进设置页 → 改间隔 →
+      // 切走再切回」就会把输入框改回 120，而且是静默的（写 .checked 不触发 onchange，
+      // 所以连「保存」都不会被调用，用户以为改生效了）。
+      const touched = asDirty.size > 0;
+      if (!touched) {
+        $("#asEnabled").checked = !!d.enabled;
+        $("#asInterval").value = d.interval;
+      }
       $("#asInterval").min = d.min_interval;
       $("#asInterval").max = d.max_interval;
       markQuick(d.interval);
@@ -478,6 +489,7 @@
         body: JSON.stringify({ enabled: $("#asEnabled").checked, interval: raw }),
       });
       // 后端会把越界值收敛后回填，所以要按返回值重绘，别按用户输入显示
+      asDirty.clear();   // 保存成功：以服务端为准，清脏标记后允许后续 loadAutoSync 回填
       $("#asInterval").value = d.interval;
       markQuick(d.interval);
       renderNext(d);
@@ -493,6 +505,8 @@
     if (!$("#asEnabled")) return;
     $("#asSave").onclick = saveAutoSync;
     $("#asEnabled").onchange = saveAutoSync;
+    // 记下用户手动改过间隔但还没保存，loadAutoSync 就不会拿服务端旧值冲掉它
+    $("#asInterval").addEventListener("input", () => asDirty.add("interval"));
     for (const c of document.querySelectorAll("#asQuick .chip")) {
       c.onclick = () => {
         $("#asInterval").value = c.dataset.min;

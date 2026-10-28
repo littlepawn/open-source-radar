@@ -74,6 +74,25 @@ describe("pickKeyFiles", () => {
   test("空树返回空数组", () => {
     expect(pickKeyFiles([], 5)).toEqual([]);
   });
+  // 上面那条「不挑 node_modules / dist」在根目录已有同名文件时是假阳性：
+  // 第一轮就把根目录的 package.json 选进 chosen，第二轮 vendor 候选被
+  // `chosen.includes(kf) continue` 跳过，VENDOR 过滤根本没被执行到
+  // （历史上 VENDOR 正则末尾多一个分号、判定恒 false，靠原用例查不出来）。
+  // 这条只给 vendor 路径，过滤失效时会原样吐出来。
+  test("只有 vendor 目录里的同名文件时不挑（防正则失效的假阳性）", () => {
+    const onlyVendor = [
+      "node_modules/foo/package.json",
+      "dist/Dockerfile",
+      "vendor/x/go.mod",
+      "build/Gemfile",
+      ".venv/pyvenv.cfg",
+      "src/deep/index.ts",
+    ];
+    const out = pickKeyFiles(onlyVendor, 20);
+    for (const p of out) {
+      expect(/(^|\/)(node_modules|dist|build|out|vendor|\.git|\.venv|target)\//.test(p)).toBe(false);
+    }
+  });
 });
 
 describe("topDirs", () => {

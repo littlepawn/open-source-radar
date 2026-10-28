@@ -196,7 +196,7 @@ function cardHTML(r, ctx = "repo") {
   const digest = r.digest || "";
   const [head, tail] = digest.split("\n");
   const hidden = r.hidden ? " · 已隐藏" : "";
-  return `<article class="card" data-id="${r.id}" data-ctx="${ctx}">
+  return `<article class="card" data-id="${esc(r.id)}" data-ctx="${ctx}">
     <div class="name">
       <a href="${esc(r.html_url)}" target="_blank" rel="noreferrer" title="${esc(r.full_name)}" data-stop>${esc(r.name || r.full_name.split("/")[1])}</a>
       <span class="owner">${esc(r.owner || r.full_name.split("/")[0])}</span>
@@ -261,7 +261,19 @@ async function loadRepos() {
   if (state.scope === "detached") q.set("source", "detached");
   // 待读 / 停滞 / 已放弃：走服务端的 view 过滤，不在这儿再筛一遍
   if (state.filter) q.set("view", state.filter);
-  const d = await api("/api/repos?" + q.toString());
+  let d;
+  try {
+    d = await api("/api/repos?" + q.toString());
+  } catch (e) {
+    // 列表请求失败（服务端重启、断网、会话过期）之前是静默 promise rejection：
+    // #cards 停在旧内容、搜索框像没反应。至少要说一句，并把旧列表清掉免得误会。
+    if (mySeq !== listSeq) return;
+    $("#cards").innerHTML = "";
+    const box = $("#empty");
+    box.hidden = false;
+    box.textContent = "加载失败：" + e.message + "（服务端可能正在重启，稍后刷新）";
+    return;
+  }
   if (mySeq !== listSeq) return;   // 已经有更新的请求了，这份结果作废
   state.items = d.items || [];
   $("#cards").innerHTML = state.items.map((r) => cardHTML(r)).join("");
@@ -279,6 +291,9 @@ async function loadRepos() {
   if (state.status?.releases_checked_at) bits.push(`版本检查 ${ago(state.status.releases_checked_at)}`);
   $("#crumb").innerHTML = bits.join(" · ");
 }
+
+/* 发现 / 新版本 / 清理三个加载器各自的请求序号（晚到的旧响应作废） */
+let discoverSeq = 0;
 
 /* ---------------- 抽屉 */
 let drawerSeq = 0;
@@ -373,13 +388,15 @@ async function openRepo(id) {
   setDrawerTab(wantTab === "ai" && aiOff ? "overview" : wantTab);
 
   $("#digSave").onclick = async () => {
-    await api("/api/repo/update", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: r.id, digest: $("#digEdit").value }),
-    });
-    toast("简介已保存");
-    await refresh();
+    try {
+      await api("/api/repo/update", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: r.id, digest: $("#digEdit").value }),
+      });
+      toast("简介已保存");
+      await refresh();
+    } catch (e) { toast("保存失败：" + e.message, true); }
   };
   $("#digRule").onclick = async () => {
     const guess = rulePreview(r, topics);
@@ -390,25 +407,29 @@ async function openRepo(id) {
     if (!b) return;
     const name = b.dataset.tag2;
     const on = b.classList.contains("active");
-    await api("/api/repo/tag", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repo_id: r.id, name, action: on ? "remove" : "add" }),
-    });
-    b.classList.toggle("active");
-    await refresh(false);
+    try {
+      await api("/api/repo/tag", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo_id: r.id, name, action: on ? "remove" : "add" }),
+      });
+      b.classList.toggle("active");
+      await refresh(false);
+    } catch (err) { toast("改标签失败：" + err.message, true); }
   };
   $("#newTag").onkeydown = async (e) => {
     if (e.key !== "Enter") return;
     const name = e.target.value.trim();
     if (!name) return;
-    await api("/api/repo/tag", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ repo_id: r.id, name, action: "add" }),
-    });
-    openRepo(r.id);
-    refresh(false);
+    try {
+      await api("/api/repo/tag", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ repo_id: r.id, name, action: "add" }),
+      });
+      openRepo(r.id);
+      await refresh(false);
+    } catch (err) { toast("加标签失败：" + err.message, true); }
   };
   $("#hideBtn").onclick = async () => {
     // 卡片上的「隐藏」按钮有二次确认（用户明确要求过），抽屉里这个却没有，
@@ -417,26 +438,30 @@ async function openRepo(id) {
       const ok = confirm(`${r.name || r.full_name}\n\n隐藏后从列表消失，但不会取消 star；在侧栏「已隐藏」里能恢复。\n\n确定隐藏吗？`);
       if (!ok) return;
     }
-    await api("/api/hide", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: r.id, hidden: !r.hidden }),
-    });
-    $("#drawer").hidden = true;
-    toast(r.hidden ? "已恢复显示" : "已隐藏");
-    refresh();
+    try {
+      await api("/api/hide", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: r.id, hidden: !r.hidden }),
+      });
+      closeDrawer();
+      toast(r.hidden ? "已恢复显示" : "已隐藏");
+      await refresh();
+    } catch (err) { toast("操作失败：" + err.message, true); }
   };
   $("#starBtn").onclick = () => window.open(r.html_url, "_blank", "noreferrer");
 
   $("#noteSave").onclick = async () => {
     const note = $("#noteEdit").value.trim();
-    await api("/api/repo/update", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ id: r.id, note }),
-    });
-    toast("备注已保存");
-    await refresh(false);
+    try {
+      await api("/api/repo/update", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ id: r.id, note }),
+      });
+      toast("备注已保存");
+      await refresh(false);
+    } catch (e) { toast("保存备注失败：" + e.message, true); }
   };
 
   // 待读 / 放弃：只改标记，抽屉内容就地更新，不重开（重开会把 README 重拉一遍）
@@ -508,7 +533,12 @@ async function openRepo(id) {
     $("#readmeBox").innerHTML = md.markdown ? miniMarkdown(md.markdown, r.full_name) : "（该仓库没有 README，或已超出 200KB 截断）";
   } catch (e) {
     if (mySeq !== drawerSeq || $("#drawer").hidden) return;
+    // 只写 textContent 会被下一次开抽屉时的「加载中…」模板顶掉，
+    // 同一个仓库第二次打开错误就消失了（表现为时好时坏）。把原因也留在
+    // 面板的 data-err 上，重开时能优先复用。
     $("#readmeBox").textContent = "README 读取失败：" + e.message;
+    const pg = document.querySelector('.dpage[data-dpage="readme"]');
+    if (pg) pg.dataset.err = e.message;
   }
 }
 
@@ -535,7 +565,7 @@ function similarBlock(r) {
   return `<div class="sec">
     <label>收藏里还有这些（按语言 / topics / 标签重叠加权）</label>
     <div class="rowtags">${list.map((x) =>
-      `<button class="chip" data-open="${x.id}" title="${esc(x.full_name)}">${esc(x.full_name.split("/")[1])} · ${Math.round(x.score * 100)}%</button>`).join("")}</div>
+      `<button class="chip" data-open="${esc(x.id)}" title="${esc(x.full_name)}">${esc(x.full_name.split("/")[1])} · ${Math.round(x.score * 100)}%</button>`).join("")}</div>
   </div>`;
 }
 
@@ -573,7 +603,9 @@ const aiState = { repoId: null, history: [] };
    所以来回切不会重拉 README、也不会丢对话。 */
 const DRAWER_TAB_KEY = "radar.drawerTab";
 function lastDrawerTab() {
-  const v = localStorage.getItem(DRAWER_TAB_KEY);
+  // 必须走 lsGet：直接读 localStorage 在无痕/禁用存储下会抛 SecurityError，
+  // 而这个函数在 openRepo 的 await 之后、没有第二层 catch，一抛整个抽屉就停在「加载中…」。
+  const v = lsGet(DRAWER_TAB_KEY);
   return v === "readme" || v === "ai" ? v : "overview";
 }
 function setDrawerTab(name) {
@@ -703,9 +735,13 @@ async function loadDiscover() {
     days: $("#dDays").value.trim(),
     q: $("#dQ").value.trim(),
   });
+  // 连改两次阈值会并发两个请求，谁先回谁先渲染——晚到的旧查询结果会盖掉新结果，
+  // 而输入框里写的是新条件。和 loadRepos 一样用序号守卫。
+  const mySeq = ++discoverSeq;
   $("#dResult").innerHTML = `<div class="empty">搜索中…</div>`;
   try {
     const d = await api("/api/discover?" + q);
+    if (mySeq !== discoverSeq) return;
     if (!d.items?.length) {
       $("#dResult").innerHTML = `<div class="empty">没结果。可能触发了 GitHub 搜索配额（未配 token 时 10 次/分钟），等一分钟再试。</div>`;
       return;
@@ -714,6 +750,7 @@ async function loadDiscover() {
       `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 条件来源 <b>${esc(discoverConditionNote())}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${rateLabel(d.rate)}</div>` +
       d.items.map((r) => cardHTML({ ...r, source: "starred" }, "discover")).join("");
   } catch (e) {
+    if (mySeq !== discoverSeq) return;
     $("#dResult").innerHTML = `<div class="empty">失败：${esc(e.message)}</div>`;
   }
 }
@@ -735,11 +772,19 @@ async function loadReleases(check) {
     }
     $("#relGo").disabled = false;
   }
-  const list = await api("/api/releases");
+  // 列表请求原先在 try 之外：check 成功、list 失败时 #relHint 还显示「发现 0 个」，
+  // 而列表停在旧内容，读起来像成功。
+  let list;
+  try {
+    list = await api("/api/releases");
+  } catch (e) {
+    $("#relHint").textContent = "列表读取失败：" + e.message;
+    return;
+  }
   $("#relList").innerHTML = list.length
     ? list.map((r) => {
         const topics = parseTopics(r.topics);
-        return `<article class="card" data-id="${r.id}" data-ctx="repo">
+        return `<article class="card" data-id="${esc(r.id)}" data-ctx="repo">
           <div class="name"><a href="${esc(r.html_url)}" target="_blank" rel="noreferrer" data-stop>${esc(r.full_name)}</a>
             <span class="badge">${esc(r.tag || "")}</span></div>
           <div class="desc">${esc(r.name || "")}</div>
@@ -779,7 +824,7 @@ async function loadCleanup(run) {
     const d = await api("/api/cleanup");
     hint.textContent = `共 ${d.total} 个库，${d.count} 个进入候选`;
     $("#cleanupList").innerHTML = d.items.length
-      ? d.items.map((c) => `<article class="card" data-id="${c.id}" data-ctx="repo">
+      ? d.items.map((c) => `<article class="card" data-id="${esc(c.id)}" data-ctx="repo">
           <div class="name"><a href="${esc(c.html_url || "#")}" target="_blank" rel="noreferrer" data-stop>${esc(c.full_name || c.id)}</a>
             ${c.language ? `<span class="badge">${esc(c.language)}</span>` : ""}
             ${c.archived ? '<span class="badge arch">归档</span>' : ""}
@@ -953,7 +998,9 @@ document.addEventListener("click", async (e) => {
         Object.assign(row, d);
         toast(act === "qtoread" ? (row.toread ? "已加入待读" : "已移出待读") : (row.dropped ? "已标记放弃" : "已取消放弃"));
       }
-      refresh();
+      // 必须 await：不 await 时 refresh 内部的 rejection 落不进这个 catch，
+      // 「操作失败」永远不会提示，控制台只有一条 Uncaught (in promise)。
+      await refresh();
     } catch (err) { toast("操作失败：" + err.message, true); }
     return;
   }
@@ -1073,12 +1120,19 @@ $("#newTagBtn").addEventListener("click", async () => {
     await refresh(false);
   } catch (e) { toast("创建失败：" + e.message, true); }
 });
-$("#drawerClose").addEventListener("click", () => ($("#drawer").hidden = true));
+/* 关闭抽屉一律走这里，必须递增 drawerSeq：
+   否则关闭瞬间还在飞的 openRepo / README 请求回来后 mySeq === drawerSeq 仍成立，
+   会把这个已关闭的抽屉连着刚到的内容重新弹开（点 ✕ / 点遮罩 / 按 Esc 三处都是这样）。 */
+function closeDrawer() {
+  drawerSeq++;
+  $("#drawer").hidden = true;
+}
+$("#drawerClose").addEventListener("click", closeDrawer);
 $("#drawer").addEventListener("click", (e) => {
-  if (e.target.id === "drawer") $("#drawer").hidden = true;
+  if (e.target.id === "drawer") closeDrawer();
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") $("#drawer").hidden = true;
+  if (e.key === "Escape") closeDrawer();
   if (e.key === "/" && document.activeElement.tagName !== "INPUT" && document.activeElement.tagName !== "TEXTAREA") {
     e.preventDefault();
     $("#q").focus();
@@ -1123,7 +1177,9 @@ function listenEvents() {
       if (d.type === "done") {
         if (d.error) toast("同步失败：" + d.error, true);
         else toast("同步完成");
-        refresh();
+        // 事件回调里不能 await；显式吞掉 rejection，避免同步成功的提示已经弹出后
+        // 还留一条 Uncaught (in promise)。
+        refresh().catch(() => {});
       }
     }
   };

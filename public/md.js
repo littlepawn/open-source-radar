@@ -93,7 +93,10 @@
         // 相对链接指向仓库里的另一个文件，本地看板没有它，留着只会 404
         if (!/^https?:\/\//i.test(val) && !val.startsWith("#")) continue;
       }
-      if (name === "src") {
+      // poster 是 video 的封面图，和 img 的 src 同一类，必须走同一套协议校验与
+      // 相对路径改写。之前只校验 href/src/srcset，poster 原样输出：`javascript:` 会
+      // 留在属性里，相对路径也不会改写成 CDN，浏览器按看板域名去取 → 404 破图。
+      if (name === "src" || name === "poster") {
         if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(val) && !/^https?:\/\//i.test(val) && !SAFE_DATA_IMG.test(val)) continue;
         if (/^https?:\/\//i.test(val) || SAFE_DATA_IMG.test(val)) { /* 原样放行 */ }
         else if (base) val = cdn(base, val);
@@ -161,20 +164,30 @@
       });
       // 其余内容一律转义；已转义过的 & 不再二次转义
       t = t.replace(/&(?![a-zA-Z#][a-zA-Z0-9]*;)/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-      // URL 里允许一层括号，否则 alert(1) 这类内容会把 ) 留在外面
-      const URL_RE = "([^()\\s]*(?:\\([^()\\s]*\\)[^()\\s]*)*)";
-      t = t.replace(new RegExp("!\\[([^\\]]*)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, alt, src2) => {
+      // URL 里允许一层括号，否则 alert(1) 这类内容会把 ) 留在外面。
+      // 三个量词都必须有上限，否则是灾难性回溯：原版 `X*(?:Y*Z*)*` 里两个 * 都能
+      // 匹配空串，一行未配对的 `[` 会枚举所有拆分方式。实测 200KB 的 "[a](b" 重复
+      // 要 5.5 秒、纯 "["×200000 要 15.5 秒，整页卡死（README 上限就是 200KB）。
+      // 加上限后同样输入 43ms。链接文字限 200 字符——再长本来也不是链接。
+      const URL_RE = "([^()\\s]{0,2048}(?:\\([^()\\s]{0,2048}\\)[^()\\s]{0,2048})?)";
+      // 图片 alt 允许为空（`![](x.png)`），链接文字不能为空——所以两个量词分开写
+      const ALT_RE = "([^\\]]{0,200})";
+      const LABEL_RE = "([^\\]]{1,200})";
+      // 没有 "](" 就不必跑正则：真实 README 里绝大多数行都没有链接
+      if (t.includes("](")) {
+      t = t.replace(new RegExp("!\\[" + ALT_RE + "\\]\\(\\s*" + URL_RE + "[^)]{0,2048}\\)", "g"), (_, alt, src2) => {
         if (!/^https?:\/\//i.test(src2) && !SAFE_DATA_IMG.test(src2)) {
           if (!base) return "";
           src2 = cdn(base, src2);
         }
         return `<img src="${esc(src2)}" alt="${alt}" loading="lazy">`;
       });
-      t = t.replace(new RegExp("\\[([^\\]]+)\\]\\(\\s*" + URL_RE + "[^)]*\\)", "g"), (_, label, href) => {
+      t = t.replace(new RegExp("\\[" + LABEL_RE + "\\]\\(\\s*" + URL_RE + "[^)]{0,2048}\\)", "g"), (_, label, href) => {
         if (/^https?:\/\//i.test(href)) return `<a href="${esc(href)}" target="_blank" rel="noreferrer">${label}</a>`;
         if (href.startsWith("#")) return `<a class="mdlink" href="${esc(href)}">${label}</a>`;
         return label;
       });
+      }
       t = t.replace(/&lt;(https?:\/\/[^\s&]+)&gt;/g, '<a href="$1" target="_blank" rel="noreferrer">$1</a>');
       t = t.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>").replace(/__([^_]+)__/g, "<b>$1</b>");
       t = t.replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<i>$2</i>");
@@ -212,7 +225,11 @@
           out.push(inline(line));
         }
         if (/^<\/[a-zA-Z][\w-]*>$/.test(t)) inHtmlBlock--;
-        if (inHtmlBlock === 0) { if (list) { out.push(`</${list}>`); list = null; } out.push("\u0002"); }
+        // 这个哨兵以前从来没人消费：块级 HTML 结束时压入 \u0002，收尾只清 \u0001，
+        // 于是每个含成对 <div> 的 README（GitHub 首页徽章区）都会把控制符留在
+        // 输出里，污染 textContent 的复制结果。块边界的收尾改由 \u0001 那次 replace
+        // 之后统一做，这里不再压哨兵。
+        if (inHtmlBlock === 0) { if (list) { out.push(`</${list}>`); list = null; } }
         continue;
       }
 
