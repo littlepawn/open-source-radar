@@ -1,5 +1,8 @@
 <p align="center">
-  <img src="public/icon-192.png" width="104" height="104" alt="开源雷达" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="public/logo-mark-dark.svg" />
+    <img src="public/logo-mark-light.svg" width="168" height="168" alt="开源雷达" />
+  </picture>
 </p>
 
 <h1 align="center">开源雷达</h1>
