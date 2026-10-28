@@ -1103,7 +1103,7 @@ const ASSET_FILES = new Set([
   // 图标与站点清单：登录页也要能取到，否则未登录时是破图标
   "favicon.ico", "favicon-16.png", "favicon-32.png",
   "apple-touch-icon.png", "icon-192.png", "icon-512.png",
-  "icon.svg", "manifest.webmanifest",
+  "icon.svg", "logo.svg", "manifest.webmanifest",
 ]);
 
 const json = (obj, status = 200) =>

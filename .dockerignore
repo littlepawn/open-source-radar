@@ -14,6 +14,8 @@ AGENTS.md
 start.sh
 scripts/
 评估/
+# 图标设计源（矢量稿与预览页）只在仓库里，运行时只需要 public/ 下的导出件
+.design/
 .DS_Store
 *.log
 
