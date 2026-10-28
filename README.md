@@ -134,7 +134,7 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.0` / `latest`，基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.4.0` / `latest`（digest `sha256:51edc200`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
 
 ```bash
 docker pull littlepawn/open-source-radar:2.4.0
@@ -158,7 +158,6 @@ docker pull littlepawn/open-source-radar:2.4.0
 > 保存前会先试一次连通（连不上就不让存）。GitHub 同步、README 抓取、AI 请求全部走它，改完即时生效、不用重启。
 > 容器部署时同样把 `127.0.0.1` 换成 `host.docker.internal`；也可以用环境变量 `RADAR_PROXY` 指定（优先于页面设置）。
 > 代理串可能带账号密码，所以加密存在库里，`/api/export` **不会** 导出它。
-
 ---
 
 ## 接口
