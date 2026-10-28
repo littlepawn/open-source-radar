@@ -334,6 +334,31 @@ function aiKey() {
 // 只放进程内存，重启即失效（README 会变，长期缓存反而会答错）。
 const aiCtxCache = new Map();   // repo_id -> { readme, tree, files, at }
 const AI_CTX_TTL_MS = 10 * 60 * 1000;
+// 每条缓存持有整份 README（≤200KB）+ 全量文件树 + 最多 6 个关键文件全文。
+// 没有上限时，一晚问过几十个仓库就是几十 MB 常驻，且过期条目只有被再次访问才覆盖、
+// 从不删除。这里同时限条数与总字符数，按写入顺序淘汰最旧的。
+const AI_CTX_MAX = 12;
+const AI_CTX_MAX_CHARS = 6 * 1024 * 1024;
+function aiCtxSize(ctx) {
+  let n = (ctx.readme || "").length;
+  for (const v of Object.values(ctx.files || {})) n += (v || "").length;
+  return n + (ctx.tree?.length || 0) * 40;
+}
+function aiCtxPut(id, ctx) {
+  // 先清过期项，再按序淘汰，最后保证本次一定写入
+  const nowMs = Date.now();
+  for (const [k, v] of aiCtxCache) if (nowMs - v.at >= AI_CTX_TTL_MS) aiCtxCache.delete(k);
+  aiCtxCache.delete(id);
+  aiCtxCache.set(id, ctx);
+  let total = 0;
+  for (const v of aiCtxCache.values()) total += aiCtxSize(v);
+  while (aiCtxCache.size > AI_CTX_MAX || (total > AI_CTX_MAX_CHARS && aiCtxCache.size > 1)) {
+    const oldest = aiCtxCache.keys().next().value;
+    if (oldest === id) break;
+    total -= aiCtxSize(aiCtxCache.get(oldest));
+    aiCtxCache.delete(oldest);
+  }
+}
 
 async function aiRepoContext(row, { wantTree = true } = {}) {
   const hit = aiCtxCache.get(row.id);
@@ -349,14 +374,14 @@ async function aiRepoContext(row, { wantTree = true } = {}) {
       tree = (t?.tree || []).filter((x) => x.type === "blob").map((x) => x.path);
       for (const f of pickKeyFiles(tree, 6)) {
         const blob = await gh(`/repos/${row.full_name}/contents/${encodeURIComponent(f)}?ref=${branch}`, { accept: "application/vnd.github.raw" });
-        if (typeof blob === "string") files[f] = blob;
+        if (typeof blob === "string") files[f] = blob.length > 60000 ? blob.slice(0, 60000) + "\n…（已截断）" : blob;
       }
     } catch (e) {
       log("warn", `拉取 ${row.full_name} 结构失败：${e.message}`);
     }
   }
   const ctx = { readme, tree, files, at: Date.now() };
-  aiCtxCache.set(row.id, ctx);
+  aiCtxPut(row.id, ctx);
   return ctx;
 }
 
@@ -386,7 +411,9 @@ async function aiChat(messages, cfg) {
         model: cfg.model,
         messages,
         max_tokens: Number(cfg.max_tokens) || 2000,
-        temperature: Number(cfg.temperature) ?? 0.2,
+        // ?? 对 NaN 不生效（NaN ?? 0.2 仍是 NaN，JSON.stringify 后成 null），
+        // 温度被写脏时上游会收到 "temperature": null。用 isFinite 收口到 0..2。
+        temperature: (() => { const t = Number(cfg.temperature); return Number.isFinite(t) ? Math.min(2, Math.max(0, t)) : 0.2; })(),
         stream: false,
       }),
       signal: AbortSignal.timeout(120000),
@@ -435,7 +462,11 @@ function parseCookies(req) {
   for (const part of h.split(";")) {
     const i = part.indexOf("=");
     if (i < 0) continue;
-    out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+    const k = part.slice(0, i).trim();
+    const raw = part.slice(i + 1).trim();
+    // decodeURIComponent 遇到畸形百分号（%zz、%E4）会抛 URIError。这个函数在鉴权门
+    // 之前被调用、整体不在 try 里，一个坏 cookie 就能让全站 500。坏值按原文保留。
+    try { out[k] = decodeURIComponent(raw); } catch { out[k] = raw; }
   }
   return out;
 }
@@ -1226,8 +1257,17 @@ function repoList({ q = "", source = "", tag = "", lang = "", sort = "stars", sc
     forked: "r.forks DESC",
   };
   const order = orderMap[sort] || orderMap.stars;
+  // 列表不返回 readme 整列：那是最多 200000 字符的 markdown，500 行就是 100MB 响应体。
+  // 列表页从来不用它（只有抽屉的 /api/repo/:id/readme 才取），排除后响应体小两个数量级。
+  // 显式列名而不是 r.*，将来加列也不会意外把大字段带出来。
+  const LIST_COLS = `r.id, r.full_name, r.owner, r.name, r.html_url, r.description, r.homepage,
+    r.language, r.topics, r.stars, r.forks, r.issues, r.watchers, r.size_kb, r.license,
+    r.archived, r.is_fork, r.created_at, r.pushed_at, r.starred_at, r.source, r.upstream,
+    r.digest, r.digest_src, r.fetched_at, r.note, r.toread, r.opened_at, r.open_count,
+    r.dropped, r.fork_behind, r.fork_ahead, r.fork_checked_at, r.last_seen_at,
+    r.detached, r.detached_at`;
   const sql = `
-    SELECT r.*, h.repo_id AS hidden,
+    SELECT ${LIST_COLS}, h.repo_id AS hidden,
       (SELECT GROUP_CONCAT(t.name, '|') FROM repo_tags rt JOIN tags t ON t.id=rt.tag_id WHERE rt.repo_id=r.id) AS tag_names,
       (SELECT tag FROM releases WHERE repo_id=r.id) AS latest_tag,
       (SELECT published_at FROM releases WHERE repo_id=r.id) AS latest_release_at
@@ -1275,6 +1315,8 @@ const server = Bun.serve({
             "User-Agent": "open-source-radar/1.0",
             "X-GitHub-Api-Version": "2022-11-28",
           },
+          // 登录页等着这一次校验出结果，没有超时会让登录按钮一直转
+          signal: AbortSignal.timeout(15000),
         });
         if (res.status === 401) return json({ error: "token 无效或已过期（GitHub 返回 401）" }, 401);
         if (!res.ok) return json({ error: `GitHub 校验失败 HTTP ${res.status}` }, 502);
@@ -1340,17 +1382,23 @@ const server = Bun.serve({
           const enc = new TextEncoder();
           // enqueue 失败就把这条流判死：否则 20s 一次的 ping 会继续往已断的流里写，
           // 一直抛到 abort 到达才停（不会真泄漏，但中间这段时间在无声重试）。
+          // ping/清理都靠下面的 req.signal abort，但 abort 不保证立刻到达（客户端拔网线
+          // 时可能几十秒才触发）。enqueue 抛错就当场停掉定时器并摘掉监听，别让它空转。
+          let ping = null;
+          const stop = () => {
+            closed = true;
+            if (ping) { clearInterval(ping); ping = null; }
+            listeners.delete(send);
+          };
           const send = (o) => {
             if (closed) return;
-            try { ctrl.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`)); } catch { closed = true; }
+            try { ctrl.enqueue(enc.encode(`data: ${JSON.stringify(o)}\n\n`)); } catch { stop(); }
           };
           send({ type: "hello", ...syncState });
           listeners.add(send);
-          const ping = setInterval(() => send({ type: "ping", at: now() }), 20000);
+          ping = setInterval(() => send({ type: "ping", at: now() }), 20000);
           req.signal.addEventListener("abort", () => {
-            closed = true;
-            clearInterval(ping);
-            listeners.delete(send);
+            stop();
             try { ctrl.close(); } catch {}
           });
         },
@@ -1487,14 +1535,16 @@ const server = Bun.serve({
           open_count: (row.open_count || 0) + 1,
           tags,
           stagnation: stagnation(row),
-          fork_lag: row.fork_behind != null ? { behind: row.fork_behind, ahead: row.fork_ahead || 0 } : null,
+          // ahead 可能是 null（上游 compare 只回了 behind_by）——null 是「不知道」，
+          // 不是 0。用 || 会把它变成「领先 0」，等于编了个结论。
+          fork_lag: row.fork_behind != null ? { behind: row.fork_behind, ahead: row.fork_ahead ?? null } : null,
           similar: sims,
         });
       }
 
       /* ---- 仓库标记：待读 / 放弃 / 备注 ---- */
       if (p === "/api/repo/flag" && req.method === "POST") {
-        const b = await req.json();
+        const b = await req.json().catch(() => ({}));
         const id = Number(b.id);
         if (!id) return json({ error: "bad id" }, 400);
         const exists = db.query("SELECT id FROM repos WHERE id=?").get(id);
@@ -1647,12 +1697,15 @@ const server = Bun.serve({
           if (!res.ok) {
             let msg = text.slice(0, 300);
             try { const j = JSON.parse(text); msg = j.error?.message || j.message || msg; } catch {}
+            // 上游 401 时经常把 key 原样回显在错误体里（"Incorrect API key sk-abc…"），
+            // 直接透传等于把凭据写进前端响应和日志。脱敏后再回。
+            msg = redactSecrets(String(msg));
             // Open WebUI 的结论：/models 验证失败不代表 chat 不通，如实告知并建议手填
             return json({ error: `上游 ${res.status}：${msg}`, models_ok: false }, 502);
           }
           const data = JSON.parse(text);
           const ids = normalizeModels(data);
-          if (!ids.length) return json({ error: "上游没返回任何模型", raw: text.slice(0, 300) }, 502);
+          if (!ids.length) return json({ error: "上游没返回任何模型", raw: redactSecrets(text.slice(0, 300)) }, 502);
           return json({ ok: true, models: ids });
         } catch (e) {
           return json({ error: e.name === "TimeoutError" ? "上游 15 秒没响应" : explainConnError(e, baseUrlRaw, { inDocker: IN_DOCKER }) }, 502);
@@ -1714,7 +1767,7 @@ const server = Bun.serve({
 
       /* ---- 更新简介 / 备注 ---- */
       if (p === "/api/repo/update" && req.method === "POST") {
-        const body = await req.json();
+        const body = await req.json().catch(() => ({}));
         if (typeof body.id !== "number") return json({ error: "bad id" }, 400);
         const sets = [], args = [];
         for (const k of Object.keys(body)) {
@@ -1737,7 +1790,7 @@ const server = Bun.serve({
           LEFT JOIN tags p ON p.name = t.parent
           ORDER BY COALESCE(t.parent,''), COALESCE(p.sort, t.sort), t.sort, t.name`).all());
       if (p === "/api/tags" && req.method === "POST") {
-        const b = await req.json();
+        const b = await req.json().catch(() => ({}));
         const name = String(b.name || "").trim();
         if (!name) return json({ error: "标签名为空" }, 400);
         const exist = db.query("SELECT * FROM tags WHERE name=?").get(name);
@@ -1764,12 +1817,16 @@ const server = Bun.serve({
           return json({ ok: true });
         }
         if (req.method === "PATCH") {
-          const b = await req.json();
+          const b = await req.json().catch(() => ({}));
           const cur = db.query("SELECT name FROM tags WHERE id=?").get(id);
           // 改名必须级联子标签：parent 存的是名字，不一起改的话子标签会瞬间变成孤儿。
           if (b.name) {
             const nn = String(b.name).trim();
             if (nn && nn !== cur?.name) {
+              // tags.name 有 UNIQUE：改成已存在的名字会抛 SQLITE_CONSTRAINT，
+              // 未捕获就是 500「UNIQUE constraint failed」，用户只看到报错不知道原因。
+              const dup = db.query("SELECT id FROM tags WHERE name=?").get(nn);
+              if (dup) return json({ error: `标签「${nn}」已存在` }, 409);
               db.query("UPDATE tags SET name=? WHERE id=?").run(nn, id);
               db.query("UPDATE tags SET parent=? WHERE parent=?").run(nn, cur?.name ?? "\u0000");
             }
@@ -1785,9 +1842,9 @@ const server = Bun.serve({
         }
       }
       if (p === "/api/repo/tag" && req.method === "POST") {
-        const b = await req.json();
+        const b = await req.json().catch(() => ({}));
         const repoId = Number(b.repo_id);
-        if (!repoId) return json({ error: "bad repo_id" }, 400);
+        if (!Number.isInteger(repoId) || repoId <= 0) return json({ error: "bad repo_id" }, 400);
         let tagId = Number(b.tag_id || 0);
         if (!tagId) {
           const name = String(b.name || "").trim();
@@ -1806,7 +1863,7 @@ const server = Bun.serve({
       if (p === "/api/star" && req.method === "POST") {
         const tkStar = currentToken();
         if (!tkStar) return json({ error: "未登录或未配置 token，无法写回 GitHub" }, 401);
-        const b = await req.json();
+        const b = await req.json().catch(() => ({}));
         const row = db.query("SELECT * FROM repos WHERE id=?").get(Number(b.id));
         if (!row) return json({ error: "not found" }, 404);
         const url = `${GH}/user/starred/${row.full_name}`;
@@ -1818,7 +1875,10 @@ const server = Bun.serve({
             Accept: "application/vnd.github+json",
             "Content-Length": "0",
           },
-        });
+          // 写 GitHub 也要有超时：网络黑洞时裸 fetch 会挂到连接层超时（数分钟），
+          // 期间前端只看到按钮无反应。
+          signal: AbortSignal.timeout(20000),
+        }).catch((e) => ({ ok: false, status: 0, _err: e.message }));
         log(res.ok ? "info" : "error", `${b.starred === false ? "取消 star" : "star"} ${row.full_name} → ${res.status}`);
         // 写回本地，别等下一轮同步：点完取消 star，列表里它就该立刻不是「我的收藏」；
         // 点回来也要能立刻撤销 detached，否则得等两小时才恢复。
@@ -1828,12 +1888,13 @@ const server = Bun.serve({
         } else if (res.ok && b.starred !== false && row.source === "starred") {
           db.query("UPDATE repos SET detached=0, detached_at=NULL WHERE id=?").run(row.id);
         }
+        if (res._err) return json({ ok: false, status: 0, error: `连不上 GitHub：${res._err}` }, 502);
         return json({ ok: res.ok, status: res.status });
       }
 
       /* ---- 隐藏 / 恢复 ---- */
       if (p === "/api/hide" && req.method === "POST") {
-        const b = await req.json();
+        const b = await req.json().catch(() => ({}));
         const id = Number(b.id);
         // hidden.repo_id 是 INTEGER PRIMARY KEY（rowid 别名）。传脏值时 Number() 得 NaN，
         // SQLite 把 NaN 当成「未提供值」并自动分配 rowid —— 实测连发两次就凭空把
