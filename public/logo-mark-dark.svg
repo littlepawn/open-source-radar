@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="开源雷达">
   <!-- README 用「透明底 · 深色主题」版：几何与 public/icon.svg 一致，去掉圆角底板 -->
-  <circle cx="32" cy="32" r="25" fill="none" stroke="#2f4f7d" stroke-width="4"/>
-  <circle cx="32" cy="32" r="15" fill="none" stroke="#4b7fc7" stroke-width="3.5"/>
+  <circle cx="32" cy="32" r="25" fill="none" stroke="#3f6ba8" stroke-width="4"/>
+  <circle cx="32" cy="32" r="15" fill="none" stroke="#6ea3e8" stroke-width="3.5"/>
   <path d="M32 32 L32 7 A25 25 0 0 1 53.65 19.5 Z" fill="#8ab4f8"/>
   <circle cx="37.2" cy="43.1" r="4" fill="#e3b341"/>
 </svg>
