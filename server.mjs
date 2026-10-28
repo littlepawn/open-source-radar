@@ -22,6 +22,7 @@ import { join, dirname, extname, normalize as pnorm } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
 import { ruleDigest } from "./lib/rules.mjs";
+import { readRate, mergeRate, rateFor, rateText } from "./lib/ratelimit.mjs";
 import {
   pickKeyFiles, buildMessages, validateAiConfig, resolveBaseUrl, normalizeModels,
   matchProvider, AI_PRESETS, DEFAULT_EXTRA_PROMPT,
@@ -456,7 +457,9 @@ db.query("DELETE FROM sessions WHERE exp < ?").run(Date.now());
 
 
 /* ---------------------------------------------------------------- GitHub 客户端 */
-let rate = { limit: null, remaining: null, reset: null, resource: null };
+// 配额按资源分桶（core 5000/h、search 30/min …）。曾经是一个全局变量存「最后一次响应的头」，
+// 于是搜索后跑一次同步，界面就在「搜索配额」处显示 core 的 5000——见 lib/ratelimit.mjs 注释。
+let rates = {};
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function gh(path, { retry = 3, accept } = {}) {
@@ -481,23 +484,19 @@ async function gh(path, { retry = 3, accept } = {}) {
       continue;
     }
     const rl = (n) => res.headers.get(`x-ratelimit-${n}`);
-    if (rl("limit")) {
-      rate = {
-        limit: Number(rl("limit")),
-        remaining: Number(rl("remaining")),
-        reset: rl("reset") ? Number(rl("reset")) * 1000 : null,
-        resource: rl("resource"),
-      };
-    }
+    rates = mergeRate(rates, readRate(res.headers));
     if (res.status === 304) return { notModified: true };
     if (res.ok) {
       const remaining = Number(rl("remaining") ?? 1);
       const isSearch = url.includes("/search/");
+      // 用 search 桶自己的 reset，不能拿全局值——core 的 reset 在一小时后，
+      // 拿它算等待会让「搜索配额仅剩 1」时白等一小时。
+      const searchBucket = rateFor(rates, "search");
       // 配额将尽时要在「下次请求」前等，而不是扔掉这次已经成功拿到的响应再重发：
       // 搜索结果是分页的，重发会得到不同 offset 的内容，丢页比等待更糟。
       const data = await res.json();
-      if (remaining <= 2 && rate.reset && isSearch) {
-        const wait = Math.max(0, rate.reset - Date.now());
+      if (remaining <= 2 && searchBucket?.reset && isSearch) {
+        const wait = Math.max(0, searchBucket.reset - Date.now());
         if (wait > 0 && wait < 15 * 60 * 1000) {
           log("warn", `搜索配额仅剩 ${remaining}，本次结果已保留，等待 ${Math.round(wait / 1000)}s 后再请求`);
           await sleep(wait + 300);
@@ -523,7 +522,9 @@ async function gh(path, { retry = 3, accept } = {}) {
         log("warn", `${kind}：${url}`);
         return { forbidden: true, status: res.status, message: `${kind}：${bodyText.slice(0, 160)}` };
       }
-      const wait = rate.reset ? Math.max(1000, rate.reset - Date.now()) : 60000;
+      // 限流等待用「当前请求所属资源」的 reset，取不到再退到 core，最后退到 60s。
+      const bucket = rateFor(rates, res.headers.get("x-ratelimit-resource") || "core") || rateFor(rates, "core");
+      const wait = bucket?.reset ? Math.max(1000, bucket.reset - Date.now()) : 60000;
       const retryAfter = Number(res.headers.get("retry-after") || 0) * 1000;
       const delay = retryAfter || Math.min(wait + 500, 15 * 60 * 1000);
       if (attempt === retry) {
@@ -990,7 +991,7 @@ async function discover({ sort = "stars", q = "", stars, days, per_page = 30, pa
   return {
     total: data.total_count || 0,
     query,
-    rate,
+    rate: rateFor(rates, "search"),
     items: items.map((r) => ({
       id: r.id,
       full_name: r.full_name,
@@ -1381,7 +1382,12 @@ const server = Bun.serve({
           authed: !!sessionInfo(req),
           token_source: ENV_TOKEN ? "env" : runtimeToken ? "login" : "none",
           token: currentToken() ? "已配置" : "未配置（匿名 60 次/小时）",
-          rate,
+          // rate 指 core 桶（同步/详情走的都是 core），另外给全量桶供界面按需取
+          rate: rateFor(rates, "core"),
+          // 每个桶都过一遍 rateFor：窗口已翻篇的桶余量回满并标 expired，
+          // 否则 /api/status 会把过期数字原样吐给界面（实测 search 停在 28 而窗口早过了）。
+          rates: Object.fromEntries(Object.keys(rates).map((k) => [k, rateFor(rates, k)])),
+          rate_text: rateText(rateFor(rates, "core")),
           counts: {
             all: viewCount.all,
             starred: viewCount.starred,

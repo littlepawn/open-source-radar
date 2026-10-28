@@ -617,6 +617,15 @@ async function loadDiscoverDefaults() {
   return discoverDefaultsPromise;
 }
 
+// 搜索配额：GitHub 的 search 桶是 30 次/分钟（配 token）或 10 次/分钟（匿名）。
+// expired 表示 reset 已过、余量已回满——不能再把旧数字当真（实测页面曾长期停在
+// 「剩余 23」，而那时窗口早已翻篇）。
+function rateLabel(r) {
+  if (!r || r.remaining == null) return "";
+  if (r.expired) return " · 搜索配额已重置";
+  return r.limit != null ? ` · 搜索配额 ${r.remaining}/${r.limit}` : ` · 搜索配额剩余 ${r.remaining}`;
+}
+
 function discoverConditionNote() {
   if ($("#dQ").value.trim()) return "自定义语法（上面的 Star / 天数不参与）";
   const s = discoverSortKey();
@@ -641,7 +650,7 @@ async function loadDiscover() {
       return;
     }
     $("#dResult").innerHTML =
-      `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 条件来源 <b>${esc(discoverConditionNote())}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${d.rate?.remaining != null ? ` · 搜索配额剩余 ${d.rate.remaining}` : ""}</div>` +
+      `<div class="crumb spanall">查询条件 <b>${esc(d.query)}</b> · 条件来源 <b>${esc(discoverConditionNote())}</b> · 命中 <b>${fmt(d.total)}</b> 个仓库${rateLabel(d.rate)}</div>` +
       d.items.map((r) => cardHTML({ ...r, source: "starred" }, "discover")).join("");
   } catch (e) {
     $("#dResult").innerHTML = `<div class="empty">失败：${esc(e.message)}</div>`;
