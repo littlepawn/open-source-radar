@@ -134,10 +134,10 @@ docker build -t open-source-radar:latest .
 > docker build --build-arg REGISTRY=docker.m.daocloud.io/ -t open-source-radar:latest .
 > ```
 
-**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.3.9` / `latest`（digest `sha256:b67627db`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
+**已发布镜像**：[docker.io/littlepawn/open-source-radar](https://hub.docker.com/r/littlepawn/open-source-radar)，当前 `2.3.10` / `latest`（digest `sha256:6d797c2c`），基于 `oven/bun:1.2-alpine`，约 107MB，非 root（bun 用户）运行。
 
 ```bash
-docker pull littlepawn/open-source-radar:2.3.9
+docker pull littlepawn/open-source-radar:2.3.10
 ```
 
 > **接本机 AI 服务时注意**：容器里的 `127.0.0.1` 是容器自己，不是你的电脑。
