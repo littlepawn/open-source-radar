@@ -8,7 +8,7 @@
 
 <p align="center">
   <a href="https://hub.docker.com/r/littlepawn/open-source-radar"><img src="https://img.shields.io/docker/pulls/littlepawn/open-source-radar?logo=docker&logoColor=white" alt="Docker Pulls" /></a>
-  <a href="https://hub.docker.com/r/littlepawn/open-source-radar"><img src="https://img.shields.io/docker/v/littlepawn/open-source-radar?sort=semver&logo=docker&logoColor=white" alt="Docker Image Version" /></a>
+  <a href="https://hub.docker.com/r/littlepawn/open-source-radar/tags"><img src="https://img.shields.io/docker/image-size/littlepawn/open-source-radar?logo=docker&logoColor=white" alt="Docker Image Size" /></a>
   <a href="https://github.com/littlepawn/open-source-radar/stargazers"><img src="https://img.shields.io/github/stars/littlepawn/open-source-radar?logo=github" alt="GitHub stars" /></a>
   <img src="https://img.shields.io/badge/runtime-Bun-black?logo=bun" alt="Runtime: Bun" />
   <img src="https://img.shields.io/badge/dependencies-0-brightgreen" alt="Zero dependencies" />
