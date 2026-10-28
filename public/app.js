@@ -1100,6 +1100,22 @@ if (logoutBtn) {
   };
 }
 
+// 侧栏滚动区的边界状态：滚到顶/底时摘掉那一侧的渐隐，否则两端总是灰蒙蒙一片。
+// ResizeObserver 覆盖「同步后标签变多」「窗口缩放导致换行变化」这类改高度的情况。
+function watchSideScroll() {
+  const sb = document.querySelector(".sidebody");
+  if (!sb) return;
+  const sync = () => {
+    const atTop = sb.scrollTop <= 1;
+    const atBottom = sb.scrollTop + sb.clientHeight >= sb.scrollHeight - 1;
+    sb.classList.toggle("at-top", atTop);
+    sb.classList.toggle("at-bottom", atBottom);
+  };
+  sb.addEventListener("scroll", sync, { passive: true });
+  if (typeof ResizeObserver === "function") new ResizeObserver(sync).observe(sb);
+  sync();
+}
+
 (async () => {
   try {
     await refresh();
@@ -1109,6 +1125,7 @@ if (logoutBtn) {
     return;
   }
   listenEvents();
+  watchSideScroll();
   // 窗口缩放会改变 chip 的换行数，「要不要折叠」得重算。
   // 防抖 150ms：拖窗口时 resize 会连发几十次，每次都读 scrollHeight 会卡。
   let rzTimer = 0;

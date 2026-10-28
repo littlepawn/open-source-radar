@@ -16,12 +16,12 @@
   --radius: 10px;
   --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 24px rgba(0,0,0,.28);
   --scrim: rgba(0,0,0,.5);
-  --sb-thumb: rgba(255,255,255,.13);
-  --sb-thumb-hover: rgba(255,255,255,.24);
+  --sb-thumb: rgba(255,255,255,.2);
+  --sb-thumb-hover: rgba(255,255,255,.36);
 }
 /* ---------- 滚动条：统一细窄、随主题、悬停才明显 ---------- */
 * { scrollbar-width: thin; scrollbar-color: var(--sb-thumb) transparent; }
-::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
   background: var(--sb-thumb);
@@ -49,8 +49,8 @@
   --danger: #dc2626;
   --shadow: 0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.06);
   --scrim: rgba(16,24,40,.25);
-  --sb-thumb: rgba(15,23,42,.16);
-  --sb-thumb-hover: rgba(15,23,42,.3);
+  --sb-thumb: rgba(15,23,42,.22);
+  --sb-thumb-hover: rgba(15,23,42,.38);
 }
 * { box-sizing: border-box; }
 /* 让浏览器原生控件（select 下拉、滚动条、日期选择器）跟随主题明暗，
@@ -95,10 +95,22 @@ button { cursor: pointer; }
   overscroll-behavior: contain;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
+  /* 上下渐隐：滚到中间时两端内容淡出，明确「下面还有东西」。
+     没有它时内容刚好断在标签区，看不出是滚动容器而不是列表到头了。
+     两个边界状态由 app.js 的 watchSideScroll() 切 class 摘掉对应一侧。 */
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px,
+              #000 calc(100% - 16px), transparent 100%);
 }
+.sidebody.at-top {
+  mask-image: linear-gradient(to bottom, #000 0, #000 calc(100% - 16px), transparent 100%);
+}
+.sidebody.at-bottom {
+  mask-image: linear-gradient(to bottom, transparent 0, #000 16px, #000 100%);
+}
+.sidebody.at-top.at-bottom { mask-image: none; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 4px 6px; }
-.brand .logo { font-size: 20px; color: var(--accent); }
+.brand .logo { width: 20px; height: 20px; border-radius: 5px; flex: 0 0 auto; display: block; }
 .brand b { display: block; font-size: 15px; letter-spacing: .3px; }
 .brand small { color: var(--text-faint); font-size: 11.5px; }
 .brand .icon { margin-left: auto; }
@@ -113,7 +125,9 @@ button { cursor: pointer; }
 .navitem {
   display: flex; align-items: center; gap: 9px;
   background: none; border: 0; border-radius: 9px;
-  padding: 8px 10px; text-align: left; color: var(--text-dim);
+  /* 8px 时 15 条导航吃掉 550px，标签区整段掉到折叠线以下。
+     收成 6.5px + 段间距 12px，实测多露出约 70px 内容。 */
+  padding: 6.5px 10px; text-align: left; color: var(--text-dim);
 }
 .navitem i { font-style: normal; width: 14px; opacity: .8; }
 .navitem em { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--text-faint); }
@@ -124,7 +138,14 @@ button { cursor: pointer; }
 .sideblock { border-top: 1px solid var(--line); padding-top: 10px; }
 /* 第一段（库）紧跟品牌区，不需要顶部分隔线 */
 .sideblock.first { border-top: 0; padding-top: 0; }
-.sidehead { font-size: 11.5px; color: var(--text-faint); padding: 0 6px 6px; display: flex; justify-content: space-between; align-items: baseline; }
+.sidehead {
+  font-size: 11.5px; color: var(--text-faint);
+  padding: 2px 6px 6px; display: flex; justify-content: space-between; align-items: baseline;
+  /* 吸顶：31 个标签滚过去以后，至少还知道自己在「标签」段而不只是「一堆 chip」 */
+  position: sticky; top: 0; z-index: 2;
+  /* 必须跟 .side 的底色一致（--bg-soft），用 --bg 会露出一条比侧栏更深的色带 */
+  background: linear-gradient(to bottom, var(--bg-soft) 72%, transparent);
+}
 /* 小节标题右侧的说明，比标题更弱，只做一次性的语义提示 */
 .sidehead-note { font-size: 10.5px; opacity: .72; font-weight: 400; }
 .taglist { display: flex; flex-wrap: wrap; gap: 5px; }
@@ -146,7 +167,8 @@ button { cursor: pointer; }
 .quickrow .chip { cursor: pointer; }
 .quickrow .chip.active { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
-.sidefoot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 10px; }
+.sidefoot { margin-top: auto; display: flex; flex-direction: column; gap: 5px; flex: 0 0 auto; border-top: 1px solid var(--line); padding-top: 8px; }
+.sidefoot .primary { padding: 8px 12px; }
 .sidebody + .sidefoot { margin-top: 0; }
 @media (max-width: 860px) {
   .sidefoot { border-top: 0; padding-top: 0; }
@@ -161,7 +183,7 @@ button { cursor: pointer; }
   background: none; border: 1px solid var(--line); border-radius: 9px; padding: 8px 12px; color: var(--text-dim);
 }
 .ghost:hover { border-color: var(--accent-2); color: var(--text); }
-.minihint { font-size: 11.5px; color: var(--text-faint); text-align: center; }
+.minihint { font-size: 11px; color: var(--text-faint); text-align: center; line-height: 1.35; }
 /* 服务商提示条：告诉用户「这家 /models 拉不到不是你的错」或「这端点用不了」 */
 .warnnote {
   text-align: left; margin: 4px 0 2px; padding: 8px 10px;
@@ -395,7 +417,7 @@ a.link { color: var(--accent-2); }
   padding: 26px 26px 22px; box-shadow: var(--shadow);
 }
 .auth-brand { display: flex; align-items: center; gap: 11px; margin-bottom: 20px; }
-.auth-brand .logo { font-size: 24px; color: var(--accent); }
+.auth-brand .logo { width: 24px; height: 24px; border-radius: 6px; flex: 0 0 auto; display: block; }
 .auth-brand b { display: block; font-size: 16px; letter-spacing: .3px; }
 .auth-brand small { color: var(--text-faint); font-size: 12px; }
 .auth-card h1 { font-size: 17px; margin: 0 0 8px; font-weight: 600; }
@@ -428,7 +450,7 @@ a.link { color: var(--accent-2); }
 
 /* 侧栏底部：用户信息 + 登出 */
 .userbox {
-  display: flex; align-items: center; gap: 8px; padding: 7px 8px;
+  display: flex; align-items: center; gap: 8px; padding: 5px 8px;
   border: 1px solid var(--line); border-radius: 9px; font-size: 12px; color: var(--text-dim);
 }
 /* 作者类规则会盖掉 UA 的 [hidden]{display:none}，不补这条 hidden 属性等于无效 */

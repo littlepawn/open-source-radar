@@ -26,3 +26,8 @@ auth.json
 
 # playwright-cli 调试产物（快照/截断日志，不入库）
 .playwright-cli/
+
+# 图标设计工作区：只保留矢量源与预览页，导出位图不进库（public/ 下那份才是交付物）
+.design/icons/png/
+.design/icons/options/*.png
+.design/icons/preview.html

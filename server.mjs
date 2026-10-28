@@ -1089,6 +1089,7 @@ const MIME = {
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".ico": "image/x-icon",
+  ".webmanifest": "application/manifest+json; charset=utf-8",
   ".woff2": "font/woff2",
 };
 // 未登录也要能取到的页面资源：登录页自身 + 它引用的 css/js + 主题预览页。
@@ -1098,7 +1099,11 @@ const PAGE_ALIAS = { "/login": "login.html", "/themes": "themes.html" };
 const ASSET_FILES = new Set([
   "login.html", "login.js",
   "themes.html", "themes.css", "themes.js",
-  "app.css", "app.js", "md.js", "rules.js", "ai.js", "favicon.ico",
+  "app.css", "app.js", "md.js", "rules.js", "ai.js",
+  // 图标与站点清单：登录页也要能取到，否则未登录时是破图标
+  "favicon.ico", "favicon-16.png", "favicon-32.png",
+  "apple-touch-icon.png", "icon-192.png", "icon-512.png",
+  "icon.svg", "manifest.webmanifest",
 ]);
 
 const json = (obj, status = 200) =>
